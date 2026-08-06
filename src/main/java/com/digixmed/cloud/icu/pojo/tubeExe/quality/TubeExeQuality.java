@@ -1,0 +1,35 @@
+/*    */ package com.digixmed.cloud.icu.pojo.tubeExe.quality;
+/*    */ 
+/*    */ 
+/*    */ @Document("tubeExe")
+/*    */ public class TubeExeQuality {
+/*    */   private String id;
+/*    */   private String pid;
+/*    */   private String name;
+/*    */   private String type;
+/*    */   private Date startTime;
+/*    */   private Date planDndTime;
+/*    */   
+/* 13 */   public void setId(String id) { this.id = id; } private Date endTime; private Boolean unPlannedEndTube; private Boolean replace; private String resourceTubeExeId; private String replaceTubeExeId; private Boolean valid; public void setPid(String pid) { this.pid = pid; } public void setName(String name) { this.name = name; } public void setType(String type) { this.type = type; } public void setStartTime(Date startTime) { this.startTime = startTime; } public void setPlanDndTime(Date planDndTime) { this.planDndTime = planDndTime; } public void setEndTime(Date endTime) { this.endTime = endTime; } public void setUnPlannedEndTube(Boolean unPlannedEndTube) { this.unPlannedEndTube = unPlannedEndTube; } public void setReplace(Boolean replace) { this.replace = replace; } public void setResourceTubeExeId(String resourceTubeExeId) { this.resourceTubeExeId = resourceTubeExeId; } public void setReplaceTubeExeId(String replaceTubeExeId) { this.replaceTubeExeId = replaceTubeExeId; } public void setValid(Boolean valid) { this.valid = valid; } public boolean equals(Object o) { if (o == this) return true;  if (!(o instanceof TubeExeQuality)) return false;  TubeExeQuality other = (TubeExeQuality)o; if (!other.canEqual(this)) return false;  Object this$unPlannedEndTube = getUnPlannedEndTube(), other$unPlannedEndTube = other.getUnPlannedEndTube(); if ((this$unPlannedEndTube == null) ? (other$unPlannedEndTube != null) : !this$unPlannedEndTube.equals(other$unPlannedEndTube)) return false;  Object this$replace = getReplace(), other$replace = other.getReplace(); if ((this$replace == null) ? (other$replace != null) : !this$replace.equals(other$replace)) return false;  Object this$valid = getValid(), other$valid = other.getValid(); if ((this$valid == null) ? (other$valid != null) : !this$valid.equals(other$valid)) return false;  Object this$id = getId(), other$id = other.getId(); if ((this$id == null) ? (other$id != null) : !this$id.equals(other$id)) return false;  Object this$pid = getPid(), other$pid = other.getPid(); if ((this$pid == null) ? (other$pid != null) : !this$pid.equals(other$pid)) return false;  Object this$name = getName(), other$name = other.getName(); if ((this$name == null) ? (other$name != null) : !this$name.equals(other$name)) return false;  Object this$type = getType(), other$type = other.getType(); if ((this$type == null) ? (other$type != null) : !this$type.equals(other$type)) return false;  Object this$startTime = getStartTime(), other$startTime = other.getStartTime(); if ((this$startTime == null) ? (other$startTime != null) : !this$startTime.equals(other$startTime)) return false;  Object this$planDndTime = getPlanDndTime(), other$planDndTime = other.getPlanDndTime(); if ((this$planDndTime == null) ? (other$planDndTime != null) : !this$planDndTime.equals(other$planDndTime)) return false;  Object this$endTime = getEndTime(), other$endTime = other.getEndTime(); if ((this$endTime == null) ? (other$endTime != null) : !this$endTime.equals(other$endTime)) return false;  Object this$resourceTubeExeId = getResourceTubeExeId(), other$resourceTubeExeId = other.getResourceTubeExeId(); if ((this$resourceTubeExeId == null) ? (other$resourceTubeExeId != null) : !this$resourceTubeExeId.equals(other$resourceTubeExeId)) return false;  Object this$replaceTubeExeId = getReplaceTubeExeId(), other$replaceTubeExeId = other.getReplaceTubeExeId(); return !((this$replaceTubeExeId == null) ? (other$replaceTubeExeId != null) : !this$replaceTubeExeId.equals(other$replaceTubeExeId)); } protected boolean canEqual(Object other) { return other instanceof TubeExeQuality; } public int hashCode() { int PRIME = 59; result = 1; Object $unPlannedEndTube = getUnPlannedEndTube(); result = result * 59 + (($unPlannedEndTube == null) ? 43 : $unPlannedEndTube.hashCode()); Object $replace = getReplace(); result = result * 59 + (($replace == null) ? 43 : $replace.hashCode()); Object $valid = getValid(); result = result * 59 + (($valid == null) ? 43 : $valid.hashCode()); Object $id = getId(); result = result * 59 + (($id == null) ? 43 : $id.hashCode()); Object $pid = getPid(); result = result * 59 + (($pid == null) ? 43 : $pid.hashCode()); Object $name = getName(); result = result * 59 + (($name == null) ? 43 : $name.hashCode()); Object $type = getType(); result = result * 59 + (($type == null) ? 43 : $type.hashCode()); Object $startTime = getStartTime(); result = result * 59 + (($startTime == null) ? 43 : $startTime.hashCode()); Object $planDndTime = getPlanDndTime(); result = result * 59 + (($planDndTime == null) ? 43 : $planDndTime.hashCode()); Object $endTime = getEndTime(); result = result * 59 + (($endTime == null) ? 43 : $endTime.hashCode()); Object $resourceTubeExeId = getResourceTubeExeId(); result = result * 59 + (($resourceTubeExeId == null) ? 43 : $resourceTubeExeId.hashCode()); Object $replaceTubeExeId = getReplaceTubeExeId(); return result * 59 + (($replaceTubeExeId == null) ? 43 : $replaceTubeExeId.hashCode()); } public String toString() { return "TubeExeQuality(id=" + getId() + ", pid=" + getPid() + ", name=" + getName() + ", type=" + getType() + ", startTime=" + getStartTime() + ", planDndTime=" + getPlanDndTime() + ", endTime=" + getEndTime() + ", unPlannedEndTube=" + getUnPlannedEndTube() + ", replace=" + getReplace() + ", resourceTubeExeId=" + getResourceTubeExeId() + ", replaceTubeExeId=" + getReplaceTubeExeId() + ", valid=" + getValid() + ")"; }
+/*    */ 
+/*    */   
+/* 16 */   public String getId() { return this.id; }
+/* 17 */   public String getPid() { return this.pid; }
+/* 18 */   public String getName() { return this.name; }
+/* 19 */   public String getType() { return this.type; }
+/* 20 */   public Date getStartTime() { return this.startTime; }
+/* 21 */   public Date getPlanDndTime() { return this.planDndTime; }
+/* 22 */   public Date getEndTime() { return this.endTime; }
+/* 23 */   public Boolean getUnPlannedEndTube() { return this.unPlannedEndTube; }
+/* 24 */   public Boolean getReplace() { return this.replace; }
+/* 25 */   public String getResourceTubeExeId() { return this.resourceTubeExeId; }
+/* 26 */   public String getReplaceTubeExeId() { return this.replaceTubeExeId; } public Boolean getValid() {
+/* 27 */     return this.valid;
+/*    */   }
+/*    */ }
+
+
+/* Location:              E:\深医\医院\重钢医院\接口对接资料\体温单\lp-temperature-service-1.0.0.jar!\com\digixmed\cloud\icu\pojo\tubeExe\quality\TubeExeQuality.class
+ * Java compiler version: 13 (57.0)
+ * JD-Core Version:       1.1.3
+ */

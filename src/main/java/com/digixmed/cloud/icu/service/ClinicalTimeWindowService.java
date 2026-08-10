@@ -269,4 +269,15 @@ public class ClinicalTimeWindowService {
     public List<Integer> getVitalSignHours() {
         return new ArrayList<>(VITAL_SIGN_HOURS);
     }
+
+    /**
+     * 检查是否应该发送身高体重
+     *
+     * @param admissionWardDate 入科日期
+     * @param reportDate 报表日期
+     * @return 是否应该发送
+     */
+    public boolean shouldSendHeightWeight(LocalDate admissionWardDate, LocalDate reportDate) {
+        return buildHeightWeightWindow(admissionWardDate, reportDate) != null;
+    }
 }

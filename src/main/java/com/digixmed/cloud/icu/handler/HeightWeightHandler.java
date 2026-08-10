@@ -21,7 +21,7 @@ import java.util.List;
  * 身高体重处理器
  *
  * 业务目的：处理身高和体重的发送（7天分页）
- * 源数据：Mongo dFormData中的sg(身高)/tz(体重)字段
+ * 源数据：Mongo dFormData中的fieldDataList数组
  * 输出：
  *   - 身高：vitalsignType=1013, unit=cm
  *   - 体重：vitalsignType=1014, unit=kg
@@ -30,9 +30,17 @@ import java.util.List;
  *   pageDayIndex = DAYS.between(admissionWardDate, reportDate)
  *   pageDayIndex >= 0 AND pageDayIndex % 7 == 0
  *
- * 字段兼容：
- *   - 身高字段：sg, fg（优先使用sg）
- *   - 体重字段：tz, zt（优先使用tz）
+ * 字段优先级：
+ *   身高：sg, fg
+ *   体重：tz, zt
+ *
+ * 实际附件结构：
+ * {
+ *   "fieldDataList": [
+ *     {"field": "tz", "value": "160"},
+ *     {"field": "sg", "value": "161"}
+ *   ]
+ * }
  */
 @Component
 public class HeightWeightHandler extends BaseVitalSignHandler {
@@ -142,7 +150,7 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return false;
         }
         LocalDate admissionDate = inpatient.getAdmissionWardTime().toLocalDate();
-        return timeWindowService.buildHeightWeightWindow(admissionDate, reportDate) != null;
+        return timeWindowService.shouldSendHeightWeight(admissionDate, reportDate);
     }
 
     /**
@@ -151,24 +159,57 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     private Document findValidFormData(String pid) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("status").is("valid")
-                .and("formCode").in(FORM_CODES));
+                .and("formCode").in(FORM_CODES))
+                .with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createTime"))
+                .limit(1);
 
         return mongoTemplate.findOne(query, Document.class, "dFormData");
     }
 
     /**
-     * 从表单数据中提取字段值
+     * 从表单数据的fieldDataList中提取字段值
+     *
+     * 实际结构：
+     * {
+     *   "fieldDataList": [
+     *     {"field": "tz", "value": "160"},
+     *     {"field": "sg", "value": "161"}
+     *   ]
+     * }
+     *
+     * @param formData MongoDB dFormData文档
+     * @param fields 字段优先级列表
+     * @return 字段值，未找到返回null
      */
+    @SuppressWarnings("unchecked")
     private String extractFieldFromFormData(Document formData, List<String> fields) {
         if (formData == null) {
             return null;
         }
+
+        // 获取fieldDataList数组
+        Object fieldDataListObj = formData.get("fieldDataList");
+        if (!(fieldDataListObj instanceof List)) {
+            log.warn("fieldDataList不是数组类型: {}", fieldDataListObj != null ? fieldDataListObj.getClass().getName() : "null");
+            return null;
+        }
+
+        List<Document> fieldDataList = (List<Document>) fieldDataListObj;
+
+        // 按优先级查找字段
         for (String field : fields) {
-            String value = getValueFromDocByKey(formData, "data." + field, String.class);
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
+            for (Document fieldData : fieldDataList) {
+                String fieldName = fieldData.getString("field");
+                if (field.equals(fieldName)) {
+                    String value = fieldData.getString("value");
+                    if (value != null && !value.trim().isEmpty()) {
+                        log.info("从fieldDataList提取字段 field={} value={}", field, value);
+                        return value.trim();
+                    }
+                }
             }
         }
+
         return null;
     }
 }

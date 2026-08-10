@@ -10,6 +10,7 @@ import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +24,12 @@ import java.util.List;
  * 输入：thermometer_intermediate集合
  * 输出：推送结果（SUCCESS/RETRY/DEAD）
  * 调度时间：每2分钟执行一次
+ *
+ * 关键流程：
+ *   1. 使用原子操作领取记录（避免多实例重复发送）
+ *   2. 从中间表恢复完整Payload
+ *   3. 调用PushService执行推送
+ *   4. 根据结果更新状态
  */
 @Component
 public class PushTask {
@@ -46,32 +53,25 @@ public class PushTask {
         log.info("STEP_10_PUSH_STARTED traceId={} 开始推送任务", traceId);
 
         try {
-            // 查询PENDING和RETRY状态的记录
-            Query query = new Query(Criteria.where("status").in("PENDING", "RETRY"))
-                    .limit(100); // 每次最多处理100条
-
-            List<Document> records = mongoTemplate.find(query, Document.class, COLLECTION_NAME);
-
-            if (records.isEmpty()) {
+            // 使用原子操作领取记录
+            Document record = claimNextRecord(traceId);
+            if (record == null) {
                 log.info("STEP_10_PUSH_STARTED traceId={} 无待推送记录", traceId);
                 return;
             }
-
-            log.info("STEP_10_PUSH_STARTED traceId={} 待推送记录数量={}", traceId, records.size());
 
             int successCount = 0;
             int retryCount = 0;
             int deadCount = 0;
             int skippedCount = 0;
 
-            for (Document record : records) {
-                try {
-                    VitalSignPayload payload = convertToPayload(record);
-                    if (payload == null) {
-                        skippedCount++;
-                        continue;
-                    }
-
+            // 处理领取的记录
+            try {
+                VitalSignPayload payload = convertToPayload(record);
+                if (payload == null) {
+                    skippedCount++;
+                    updateRecordStatus(record, "DEAD", "PAYLOAD_RESTORE_FAILED", "无法恢复Payload");
+                } else {
                     PushService.PushResult result = pushService.push(payload, traceId);
                     switch (result) {
                         case SUCCESS:
@@ -87,10 +87,11 @@ public class PushTask {
                             skippedCount++;
                             break;
                     }
-                } catch (Exception e) {
-                    log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送单条记录异常", traceId, e);
-                    deadCount++;
                 }
+            } catch (Exception e) {
+                log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送单条记录异常", traceId, e);
+                deadCount++;
+                updateRecordStatus(record, "DEAD", "PUSH_ERROR", e.getMessage());
             }
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送完成: success={} retry={} dead={} skipped={}",
@@ -101,6 +102,28 @@ public class PushTask {
         }
     }
 
+    /**
+     * 原子领取下一条待推送记录
+     */
+    private Document claimNextRecord(String traceId) {
+        // 查询PENDING或RETRY且nextRetryTime已到的记录
+        Query query = new Query(Criteria.where("status").in("PENDING", "RETRY"))
+                .limit(1);
+
+        // 原子更新为SENDING
+        Update update = new Update();
+        update.set("status", "SENDING");
+        update.set("claimedAt", new Date());
+        update.set("updatedAt", new Date());
+
+        return mongoTemplate.findAndModify(query, update,
+                org.springframework.data.mongodb.core.FindAndModifyOptions.options().returnNew(true),
+                Document.class, COLLECTION_NAME);
+    }
+
+    /**
+     * 从中间表Document恢复完整Payload
+     */
     private VitalSignPayload convertToPayload(Document record) {
         try {
             java.time.LocalDateTime planTime = null;
@@ -109,21 +132,64 @@ public class PushTask {
                         .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
             }
 
+            java.time.LocalDateTime recordTime = null;
+            if (record.get("recordTime") instanceof Date) {
+                recordTime = ((Date) record.get("recordTime")).toInstant()
+                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+            }
+
             return VitalSignPayload.builder()
-                    .vitalsignName((String) record.get("vitalsignName"))
-                    .vitalsignType((String) record.get("vitalsignType"))
-                    .patientId((String) record.get("patientId"))
-                    .mrn((String) record.get("mrn"))
-                    .patientName((String) record.get("patientName"))
-                    .series((String) record.get("series"))
-                    .wardCode((String) record.get("wardCode"))
+                    .vitalsignName(getStringValue(record, "vitalsignName"))
+                    .vitalsignType(getStringValue(record, "vitalsignType"))
+                    .vitalsignNVal1(getStringValue(record, "vitalsignNVal1"))
+                    .vitalsignNVal2(getStringValue(record, "vitalsignNVal2"))
+                    .vitalsignNVal3(getStringValue(record, "vitalsignNVal3"))
+                    .vitalsignSVal1(getStringValue(record, "vitalsignSVal1"))
+                    .vitalsignSVal2(getStringValue(record, "vitalsignSVal2"))
+                    .patientId(getStringValue(record, "patientId"))
+                    .mrn(getStringValue(record, "mrn"))
+                    .patientName(getStringValue(record, "patientName"))
+                    .series(getStringValue(record, "series"))
+                    .wardCode(getStringValue(record, "wardCode"))
+                    .unit(getStringValue(record, "unit"))
+                    .remark(getStringValue(record, "remark"))
+                    .recordNurseId(getStringValue(record, "recordNurseId"))
+                    .recordNurseName(getStringValue(record, "recordNurseName"))
+                    .mongoPid(getStringValue(record, "mongoPid"))
                     .planTime(planTime)
-                    .recordTime(planTime)
-                    .recordNurseId("dba")
+                    .recordTime(recordTime != null ? recordTime : planTime)
+                    .isValid(record.get("isValid") instanceof Number ? ((Number) record.get("isValid")).intValue() : 1)
                     .build();
         } catch (Exception e) {
             log.error("转换payload失败: {}", record, e);
             return null;
         }
+    }
+
+    /**
+     * 安全获取字符串值
+     */
+    private String getStringValue(Document record, String key) {
+        Object value = record.get(key);
+        if (value == null) return null;
+        return value.toString();
+    }
+
+    /**
+     * 更新记录状态
+     */
+    private void updateRecordStatus(Document record, String status, String errorCode, String errorMsg) {
+        String idempotencyKey = (String) record.get("idempotencyKey");
+        if (idempotencyKey == null) return;
+
+        Update update = new Update();
+        update.set("status", status);
+        update.set("lastErrorCode", errorCode);
+        update.set("lastErrorMessage", errorMsg);
+        update.set("updatedAt", new Date());
+
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
+                update, COLLECTION_NAME);
     }
 }

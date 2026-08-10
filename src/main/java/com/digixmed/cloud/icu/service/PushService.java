@@ -14,8 +14,12 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -43,6 +47,9 @@ public class PushService {
     private static final Logger log = LoggerFactory.getLogger(PushService.class);
 
     private static final String COLLECTION_NAME = "thermometer_intermediate";
+
+    private static final DateTimeFormatter PLAN_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -96,6 +103,12 @@ public class PushService {
         String dataXml = buildDataXml(payload);
         String requestXml = DataUtils.getRequestStr(dataXml);
 
+        if (requestXml == null || requestXml.trim().isEmpty()) {
+            log.error("STEP_11_PUSH_RESPONDED traceId={} 请求体为空", traceId);
+            updateRecordAfterPush(idempotencyKey, false, "EMPTY_REQUEST", "请求体为空", null, null);
+            return PushResult.RETRY;
+        }
+
         // 发送请求
         long startTime = System.currentTimeMillis();
         Map<String, String> response;
@@ -126,31 +139,140 @@ public class PushService {
                 log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} 业务错误: {}", traceId, errorMsg);
                 return PushResult.DEAD;
             }
+        } else if ("4".equals(responseCode.substring(0, 1))) {
+            // 4xx错误
+            updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
+            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP客户端错误: code={}", traceId, responseCode);
+            return PushResult.DEAD;
         } else {
-            updateRecordAfterPush(idempotencyKey, false, "HTTP_ERROR", responseMsg, requestXml, responseMsg);
-            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP错误: code={}", traceId, responseCode);
-            return "4".equals(responseCode) ? PushResult.DEAD : PushResult.RETRY;
+            // 5xx或其他错误，允许重试
+            updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
+            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP服务端错误，可重试: code={}", traceId, responseCode);
+            return PushResult.RETRY;
         }
     }
 
+    /**
+     * 更新记录（带重试逻辑）
+     */
+    private void updateRecordAfterPush(String idempotencyKey, boolean success, String errorCode,
+                                        String errorMsg, String requestXml, String responseMsg) {
+        Update update = new Update();
+        update.set("updatedAt", new Date());
+
+        if (success) {
+            update.set("status", "SUCCESS");
+            update.set("sentAt", new Date());
+        } else {
+            // 判断是否应该重试
+            boolean shouldRetry = shouldRetry(errorCode);
+            int retryCount = getRetryCount(idempotencyKey);
+
+            if (shouldRetry && retryCount < pushProperties.getMaxRetryCount()) {
+                update.set("status", "RETRY");
+                update.set("retryCount", retryCount + 1);
+                // 指数退避
+                long delay = pushProperties.getRetryBaseInterval() * (1L << retryCount);
+                update.set("nextRetryTime", new Date(System.currentTimeMillis() + delay));
+                log.info("进入重试状态 retryCount={} nextDelayMs={}", retryCount + 1, delay);
+            } else {
+                update.set("status", "DEAD");
+                update.set("retryCount", retryCount + 1);
+                log.info("进入DEAD状态 retryCount={}", retryCount + 1);
+            }
+        }
+
+        if (errorCode != null) {
+            update.set("lastErrorCode", errorCode);
+        }
+        if (errorMsg != null) {
+            update.set("lastErrorMessage", truncate(errorMsg, pushProperties.getMaxResponseBodyLength()));
+        }
+        if (requestXml != null) {
+            update.set("requestBodyMasked", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
+        }
+        if (responseMsg != null) {
+            update.set("responseBodyMasked", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
+        }
+
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
+                update, COLLECTION_NAME);
+    }
+
+    /**
+     * 判断是否应该重试
+     */
+    private boolean shouldRetry(String errorCode) {
+        if (errorCode == null) return false;
+        // 网络错误、超时、5xx可以重试
+        return errorCode.startsWith("HTTP_5") ||
+               errorCode.startsWith("HTTP_4") ||
+               "REQUEST_ERROR".equals(errorCode) ||
+               "EMPTY_REQUEST".equals(errorCode);
+    }
+
+    /**
+     * 获取当前重试次数
+     */
+    private int getRetryCount(String idempotencyKey) {
+        Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
+        Map<String, Object> record = mongoTemplate.findOne(query, Map.class, COLLECTION_NAME);
+        if (record != null && record.get("retryCount") instanceof Number) {
+            return ((Number) record.get("retryCount")).intValue();
+        }
+        return 0;
+    }
+
+    /**
+     * 构建幂等键
+     * 格式：patientId_series_vitalsignType_planTime
+     */
     private String buildIdempotencyKey(VitalSignPayload payload) {
+        String planTimeStr = payload.getPlanTime() != null
+                ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : "";
         return String.format("%s_%s_%s_%s",
                 payload.getPatientId(),
                 payload.getSeries(),
                 payload.getVitalsignType(),
-                payload.getPlanTime());
+                planTimeStr);
     }
 
+    /**
+     * 计算Payload哈希（使用SHA-256）
+     */
     private String computePayloadHash(VitalSignPayload payload) {
-        String content = String.format("%s_%s_%s_%s_%s_%s_%s",
-                payload.getVitalsignNVal1(),
-                payload.getVitalsignNVal2(),
-                payload.getVitalsignNVal3(),
-                payload.getVitalsignSVal1(),
-                payload.getVitalsignSVal2(),
-                payload.getRecordNurseName(),
-                payload.getRecordTime());
-        return String.valueOf(content.hashCode());
+        String content = String.format("%s_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s",
+                nullToEmpty(payload.getVitalsignNVal1()),
+                nullToEmpty(payload.getVitalsignNVal2()),
+                nullToEmpty(payload.getVitalsignNVal3()),
+                nullToEmpty(payload.getVitalsignSVal1()),
+                nullToEmpty(payload.getVitalsignSVal2()),
+                nullToEmpty(payload.getRecordNurseName()),
+                nullToEmpty(payload.getRecordNurseId()),
+                nullToEmpty(payload.getUnit()),
+                nullToEmpty(payload.getRemark()),
+                payload.getIsValid(),
+                payload.getPlanTime() != null ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : "");
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            log.error("SHA-256不可用，降级使用hashCode", e);
+            return String.valueOf(content.hashCode());
+        }
+    }
+
+    private String nullToEmpty(String str) {
+        return str == null ? "" : str;
     }
 
     private Map<String, Object> findExistingRecord(String idempotencyKey) {
@@ -158,39 +280,72 @@ public class PushService {
         return mongoTemplate.findOne(query, Map.class, COLLECTION_NAME);
     }
 
+    /**
+     * 保存完整Payload到中间表
+     */
     private void saveNewRecord(VitalSignPayload payload, String idempotencyKey, String payloadHash, String traceId) {
         Map<String, Object> record = new HashMap<>();
         record.put("idempotencyKey", idempotencyKey);
+        record.put("traceId", traceId);
         record.put("patientId", payload.getPatientId());
         record.put("mrn", payload.getMrn());
         record.put("patientName", payload.getPatientName());
         record.put("series", payload.getSeries());
+        record.put("wardCode", payload.getWardCode());
         record.put("vitalsignType", payload.getVitalsignType());
         record.put("vitalsignName", payload.getVitalsignName());
-        record.put("planTime", Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        record.put("vitalsignNVal1", payload.getVitalsignNVal1());
+        record.put("vitalsignNVal2", payload.getVitalsignNVal2());
+        record.put("vitalsignNVal3", payload.getVitalsignNVal3());
+        record.put("vitalsignSVal1", payload.getVitalsignSVal1());
+        record.put("vitalsignSVal2", payload.getVitalsignSVal2());
+        record.put("unit", payload.getUnit());
+        record.put("remark", payload.getRemark());
+        record.put("isValid", payload.getIsValid());
+        record.put("recordNurseId", payload.getRecordNurseId());
+        record.put("recordNurseName", payload.getRecordNurseName());
+        record.put("mongoPid", payload.getMongoPid());
+        if (payload.getPlanTime() != null) {
+            record.put("planTime", Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        }
+        if (payload.getRecordTime() != null) {
+            record.put("recordTime", Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        }
         record.put("payloadHash", payloadHash);
         record.put("status", "PENDING");
         record.put("retryCount", 0);
-        record.put("traceId", traceId);
         record.put("createdAt", new Date());
         record.put("updatedAt", new Date());
         mongoTemplate.save(record, COLLECTION_NAME);
     }
 
+    /**
+     * 更新记录用于重发
+     */
     private void updateRecordForResend(String idempotencyKey, VitalSignPayload payload, String payloadHash) {
         Update update = new Update();
         update.set("payloadHash", payloadHash);
         update.set("status", "PENDING");
         update.set("retryCount", 0);
+        update.set("vitalsignNVal1", payload.getVitalsignNVal1());
+        update.set("vitalsignNVal2", payload.getVitalsignNVal2());
+        update.set("vitalsignNVal3", payload.getVitalsignNVal3());
+        update.set("vitalsignSVal1", payload.getVitalsignSVal1());
+        update.set("vitalsignSVal2", payload.getVitalsignSVal2());
+        update.set("recordNurseName", payload.getRecordNurseName());
         update.set("updatedAt", new Date());
         mongoTemplate.updateFirst(
                 Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
                 update, COLLECTION_NAME);
     }
 
+    /**
+     * 原子更新状态为SENDING
+     */
     private boolean atomicUpdateToSending(String idempotencyKey) {
         Update update = new Update();
         update.set("status", "SENDING");
+        update.set("claimedAt", new Date());
         update.set("updatedAt", new Date());
         var result = mongoTemplate.updateFirst(
                 Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)
@@ -199,32 +354,10 @@ public class PushService {
         return result.getModifiedCount() > 0;
     }
 
-    private void updateRecordAfterPush(String idempotencyKey, boolean success, String errorCode, String errorMsg, String requestXml, String responseMsg) {
-        Update update = new Update();
-        update.set("status", success ? "SUCCESS" : "DEAD");
-        update.set("updatedAt", new Date());
-        if (success) {
-            update.set("sentAt", new Date());
-        }
-        if (errorCode != null) {
-            update.set("lastErrorCode", errorCode);
-        }
-        if (errorMsg != null) {
-            update.set("lastErrorMessage", errorMsg);
-        }
-        if (requestXml != null) {
-            update.set("requestBodyMasked", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
-        }
-        if (responseMsg != null) {
-            update.set("responseBodyMasked", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
-        }
-        mongoTemplate.updateFirst(
-                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
-                update, COLLECTION_NAME);
-    }
-
+    /**
+     * 构建数据XML（使用JAXB）
+     */
     private String buildDataXml(VitalSignPayload payload) {
-        // 使用DataValue构建XML
         com.digixmed.cloud.icu.pojo.DataValue dataValue = new com.digixmed.cloud.icu.pojo.DataValue();
         dataValue.setIsValid(payload.getIsValid());
         dataValue.setMrn(payload.getMrn());
@@ -242,6 +375,7 @@ public class PushService {
         dataValue.setVitalsignType(payload.getVitalsignType());
         dataValue.setVitalsignNVal1(payload.getVitalsignNVal1());
         dataValue.setVitalsignNVal2(payload.getVitalsignNVal2());
+        dataValue.setVitalsignNVal3(payload.getVitalsignNVal3());
         dataValue.setVitalsignSVal1(payload.getVitalsignSVal1());
         dataValue.setVitalsignSVal2(payload.getVitalsignSVal2());
 
@@ -253,6 +387,9 @@ public class PushService {
         return XMLUtils.convertToXml(data);
     }
 
+    /**
+     * 提取错误信息
+     */
     private String extractErrorMsg(String responseMsg) {
         if (responseMsg == null) return "未知错误";
         int start = responseMsg.indexOf("<msg>");
@@ -263,11 +400,17 @@ public class PushService {
         return responseMsg;
     }
 
+    /**
+     * 截断字符串
+     */
     private String truncate(String str, int maxLength) {
         if (str == null) return null;
         return str.length() > maxLength ? str.substring(0, maxLength) + "..." : str;
     }
 
+    /**
+     * 脱敏患者ID
+     */
     private String maskPatientId(String patientId) {
         if (patientId == null || patientId.length() <= 4) return "****";
         return patientId.substring(0, 2) + "****" + patientId.substring(patientId.length() - 2);

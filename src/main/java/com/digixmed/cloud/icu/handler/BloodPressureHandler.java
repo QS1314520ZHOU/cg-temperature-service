@@ -1,8 +1,10 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.BloodPressurePair;
+import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
+import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -12,9 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.Arrays;
 import java.util.Date;
-import java.util.List;
 
 /**
  * 血压处理器
@@ -24,7 +24,7 @@ import java.util.List;
  * 输出：vitalsignName=血压, vitalsignType=1005, unit=mmHg
  *
  * 规则：
- *   - 同一患者、同一标准时间点必须同时存在收缩压和舒张压
+ *   - 同一患者、同一业务时间窗口必须同时存在收缩压和舒张压
  *   - 如果只存在一个值：不发送不完整血压，记录WARN
  *   - reasonCode=INCOMPLETE_BLOOD_PRESSURE
  */
@@ -36,6 +36,9 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
 
     @Autowired
     private MongoTemplate mongoTemplate;
+
+    @Autowired
+    private ClinicalTimeWindowService timeWindowService;
 
     public BloodPressureHandler(PatientIdentityMapper patientIdentityMapper) {
         super(patientIdentityMapper);
@@ -50,10 +53,15 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
             return null;
         }
 
+        // 使用业务时间窗口查询
+        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
+        Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
         // 查询收缩压
-        Document systolicDoc = findRecordByCode(pid, planTime, SYSTOLIC_CODE);
+        Document systolicDoc = findRecordByCode(pid, startTime, endTime, SYSTOLIC_CODE);
         // 查询舒张压
-        Document diastolicDoc = findRecordByCode(pid, planTime, DIASTOLIC_CODE);
+        Document diastolicDoc = findRecordByCode(pid, startTime, endTime, DIASTOLIC_CODE);
 
         String systolic = systolicDoc != null ? getValueFromDocByKey(systolicDoc, "strVal", String.class) : null;
         String diastolic = diastolicDoc != null ? getValueFromDocByKey(diastolicDoc, "strVal", String.class) : null;
@@ -94,14 +102,16 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
     }
 
     /**
-     * 按code查询指定时间点的记录
+     * 按code查询指定时间窗口内的记录
+     * 使用业务时间窗口而非精确时间匹配
      */
-    private Document findRecordByCode(String pid, LocalDateTime planTime, String code) {
-        Date time = Date.from(planTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+    private Document findRecordByCode(String pid, Date startTime, Date endTime, String code) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(code)
-                .and("time").is(time)
-                .and("valid").is(true));
+                .and("time").gte(startTime).lt(endTime)
+                .and("valid").is(true)
+        ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
+                .limit(1);
 
         return mongoTemplate.findOne(query, Document.class, "bedside");
     }

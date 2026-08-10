@@ -1,8 +1,10 @@
 package com.digixmed.cloud.icu.handler;
 
+import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VentilatorState;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
+import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -23,7 +25,7 @@ import java.util.Date;
  *
  * 呼吸机状态判断：
  *   A. 正在使用呼吸机（USING）：
- *      - 当前标准时间点 param_HuXiMoShi 的 strVal 非 null、非空白
+ *      - 当前业务时间窗口内有效param_HuXiMoShi的strVal非null、非空白
  *      - vitalsignSVal1 = "使用呼吸机"
  *      - vitalsignNVal1 = 空
  *
@@ -35,7 +37,7 @@ import java.util.Date;
  *
  *   C. 停止呼吸机（STOPPED）：
  *      - 上一个标准时间点或上一个有效状态为使用呼吸机
- *      - 当前标准时间点已经没有有效 param_HuXiMoShi
+ *      - 当前标准时间点已经没有有效param_HuXiMoShi
  *      - vitalsignSVal1 = "停止呼吸机"
  *      - vitalsignNVal1 = 空
  *      - 同一个停止事件只生成一次
@@ -48,6 +50,9 @@ public class BreathHandler extends BaseVitalSignHandler {
 
     @Autowired
     private MongoTemplate mongoTemplate;
+
+    @Autowired
+    private ClinicalTimeWindowService timeWindowService;
 
     public BreathHandler(PatientIdentityMapper patientIdentityMapper) {
         super(patientIdentityMapper);
@@ -62,8 +67,13 @@ public class BreathHandler extends BaseVitalSignHandler {
             return null;
         }
 
-        // 查询当前时间点的呼吸机模式
-        VentilatorState currentState = resolveVentilatorState(pid, planTime, traceId);
+        // 使用业务时间窗口查询
+        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
+        Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
+        // 查询当前时间窗口的呼吸机模式
+        VentilatorState currentState = resolveVentilatorState(pid, startTime, endTime, traceId);
         // 查询上一个时间点的呼吸机状态
         VentilatorState previousState = resolvePreviousVentilatorState(pid, planTime, traceId);
 
@@ -112,13 +122,14 @@ public class BreathHandler extends BaseVitalSignHandler {
     }
 
     /**
-     * 解析当前时间点的呼吸机状态
+     * 解析当前时间窗口的呼吸机状态
+     * 使用业务时间窗口而非精确时间匹配
      */
-    private VentilatorState resolveVentilatorState(String pid, LocalDateTime planTime, String traceId) {
-        Date time = Date.from(planTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+    private VentilatorState resolveVentilatorState(String pid, Date startTime, Date endTime, String traceId) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(VENTILATOR_CODE)
-                .and("time").is(time));
+                .and("time").gte(startTime).lt(endTime)
+                .and("valid").is(true));
 
         Document record = mongoTemplate.findOne(query, Document.class, "bedside");
         if (record == null) {
@@ -126,9 +137,7 @@ public class BreathHandler extends BaseVitalSignHandler {
         }
 
         String strVal = getValueFromDocByKey(record, "strVal", String.class);
-        Boolean valid = getValueFromDocByKey(record, "valid", Boolean.class);
-
-        if (strVal != null && !strVal.trim().isEmpty() && Boolean.TRUE.equals(valid)) {
+        if (strVal != null && !strVal.trim().isEmpty()) {
             return VentilatorState.USING;
         }
         return VentilatorState.NOT_USING;
@@ -143,6 +152,7 @@ public class BreathHandler extends BaseVitalSignHandler {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(VENTILATOR_CODE)
                 .and("time").lt(currentTime)
+                .and("valid").is(true)
         ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "time"))
                 .limit(1);
 
@@ -152,9 +162,7 @@ public class BreathHandler extends BaseVitalSignHandler {
         }
 
         String strVal = getValueFromDocByKey(record, "strVal", String.class);
-        Boolean valid = getValueFromDocByKey(record, "valid", Boolean.class);
-
-        if (strVal != null && !strVal.trim().isEmpty() && Boolean.TRUE.equals(valid)) {
+        if (strVal != null && !strVal.trim().isEmpty()) {
             return VentilatorState.USING;
         }
         return VentilatorState.NOT_USING;

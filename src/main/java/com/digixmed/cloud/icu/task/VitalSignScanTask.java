@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 
@@ -38,7 +39,13 @@ import java.util.List;
  *   2. 从Kingbase查询在科患者
  *   3. 对每个患者，查询对应的bedside记录
  *   4. 调用对应Handler处理
- *   5. 保存到IntermediateTable
+ *   5. 保存到中间表（不直接调用HTTP推送）
+ *
+ * 职责分离：
+ *   - 本任务只负责采集和计算数据
+ *   - 只写入中间表PENDING状态
+ *   - 不进行HTTP/SOAP请求
+ *   - 推送由PushTask负责
  */
 @Component
 public class VitalSignScanTask {
@@ -46,6 +53,11 @@ public class VitalSignScanTask {
     private static final Logger log = LoggerFactory.getLogger(VitalSignScanTask.class);
 
     private static final String WARD_CODE = "125011";
+
+    /**
+     * 脉搏代码优先级（param_脉搏优先，避免重复处理）
+     */
+    private static final List<String> PULSE_CODES = Arrays.asList("param_脉搏", "param_PR");
 
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
@@ -121,28 +133,88 @@ public class VitalSignScanTask {
                 return;
             }
 
-            // 查询bedside记录
-            Date planDate = Date.from(planTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
 
-            // 处理各类体征
+            // 处理体温
             processVitalSign(traceId, patientTraceId, pid, patient, planTime,
                     "param_T", temperatureHandler, window);
+
+            // 处理脉搏（统一查询，避免重复）
             processVitalSign(traceId, patientTraceId, pid, patient, planTime,
                     "param_脉搏", pulseHandler, window);
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_PR", pulseHandler, window);
+            // 如果没有param_脉搏，尝试param_PR
+            processPulseWithFallback(traceId, patientTraceId, pid, patient, planTime, window);
+
+            // 处理心率
             processVitalSign(traceId, patientTraceId, pid, patient, planTime,
                     "param_HR", heartRateHandler, window);
+
+            // 处理呼吸
             processVitalSign(traceId, patientTraceId, pid, patient, planTime,
                     "param_resp", breathHandler, window);
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_nibp_s", bloodPressureHandler, window);
+
+            // 处理血压（血压Handler内部会查询收缩压和舒张压）
+            processBloodPressure(traceId, patientTraceId, pid, patient, planTime, window);
+
+            // 处理疼痛评分
             processVitalSign(traceId, patientTraceId, pid, patient, planTime,
                     "param_tengTong_score", painScoreHandler, window);
 
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} patientId={} 处理异常", patientTraceId, patientIdMasked, e);
+        }
+    }
+
+    /**
+     * 处理脉搏，支持param_脉搏和param_PR fallback
+     */
+    private void processPulseWithFallback(String parentTraceId, String patientTraceId, String pid,
+                                           Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
+        try {
+            Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
+            // 先查询param_脉搏
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_脉搏")
+                    .and("time").gte(startTime).lt(endTime));
+
+            Document bedside = mongoTemplate.findOne(query, Document.class, "bedside");
+
+            // 如果没有param_脉搏，尝试param_PR
+            if (bedside == null) {
+                query = new Query(Criteria.where("pid").is(pid)
+                        .and("code").is("param_PR")
+                        .and("time").gte(startTime).lt(endTime));
+                bedside = mongoTemplate.findOne(query, Document.class, "bedside");
+            }
+
+            if (bedside != null) {
+                VitalSignPayload payload = pulseHandler.handle(bedside, patient, planTime, patientTraceId);
+                if (payload != null) {
+                    pushService.push(payload, patientTraceId);
+                }
+            }
+        } catch (Exception e) {
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 脉搏处理异常",
+                    patientTraceId, pid, e);
+        }
+    }
+
+    /**
+     * 处理血压（血压Handler内部会查询收缩压和舒张压）
+     */
+    private void processBloodPressure(String parentTraceId, String patientTraceId, String pid,
+                                       Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
+        try {
+            // 血压Handler会自己查询收缩压和舒张压，传入null即可
+            VitalSignPayload payload = bloodPressureHandler.handle(null, patient, planTime, patientTraceId);
+            if (payload != null) {
+                pushService.push(payload, patientTraceId);
+            }
+        } catch (Exception e) {
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 血压处理异常",
+                    patientTraceId, pid, e);
         }
     }
 
@@ -156,7 +228,8 @@ public class VitalSignScanTask {
 
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
-                    .and("time").gte(startTime).lt(endTime));
+                    .and("time").gte(startTime).lt(endTime)
+                    .and("valid").is(true));
 
             Document bedside = mongoTemplate.findOne(query, Document.class, "bedside");
             if (bedside == null) {

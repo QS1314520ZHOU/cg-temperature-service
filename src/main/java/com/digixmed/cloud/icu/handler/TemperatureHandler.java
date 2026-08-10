@@ -42,6 +42,7 @@ public class TemperatureHandler extends BaseVitalSignHandler {
 
     private static final double RECHECK_THRESHOLD = 38.5;
     private static final String SOURCE_CODE = "param_T";
+    private static final String LOCATION_CODE = "param_tiWenBuWei";
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -76,12 +77,15 @@ public class TemperatureHandler extends BaseVitalSignHandler {
         log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} bedsideId={} 体温值={} valid={}",
                 traceId, bedsideId, tempValue, valid);
 
+        // 查询体温部位（独立的bedside记录）
+        String location = findTemperatureLocation(pid, planTime, traceId);
+
         // 构建payload
         VitalSignPayload payload = VitalSignPayload.builder()
                 .vitalsignName("体温")
                 .vitalsignType("1001")
                 .vitalsignNVal1(formatDouble(tempValue))
-                .vitalsignSVal1(getValueFromDocByKey(bedside, "param_tiWenBuWei.strVal", String.class))
+                .vitalsignSVal1(location)
                 .unit("℃")
                 .build();
 
@@ -95,6 +99,31 @@ public class TemperatureHandler extends BaseVitalSignHandler {
         }
 
         return payload;
+    }
+
+    /**
+     * 查询体温部位
+     * param_tiWenBuWei是独立的bedside记录，不是param_T文档中的嵌套字段
+     */
+    private String findTemperatureLocation(String pid, LocalDateTime planTime, String traceId) {
+        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
+        Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
+        Query query = new Query(Criteria.where("pid").is(pid)
+                .and("code").is(LOCATION_CODE)
+                .and("valid").is(true)
+                .and("time").gte(startTime).lt(endTime)
+        ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
+                .limit(1);
+
+        Document record = mongoTemplate.findOne(query, Document.class, "bedside");
+        if (record != null) {
+            String location = getValueFromDocByKey(record, "strVal", String.class);
+            log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} 体温部位={}", traceId, location);
+            return location;
+        }
+        return null;
     }
 
     /**

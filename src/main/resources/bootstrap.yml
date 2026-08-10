@@ -12,7 +12,7 @@ spring:
       server-addr: localhost:50001
   data:
     mongodb:
-      uri: ${MONGODB_URI:mongodb://dxm:DB%40dmin@10.35.4.11:32121/SmartCare}
+      uri: ${MONGODB_URI}
   profiles:
     active: PRD
 

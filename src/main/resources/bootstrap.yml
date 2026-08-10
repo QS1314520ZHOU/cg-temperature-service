@@ -1,6 +1,6 @@
 spring:
   application:
-    name: LPTemperatureService
+    name: CGTemperatureService
   cloud:
     nacos:
       config:
@@ -12,32 +12,43 @@ spring:
       server-addr: localhost:50001
   data:
     mongodb:
-      uri: mongodb://dxm:DB%40dmin@10.10.51.38:32121/SmartCare
-#      host: 10.10.51.38
-#      port: 32121
-#      database: SmartCare
-#      username: dxm
-#      password: DB@dmin
+      uri: ${MONGODB_URI:mongodb://dxm:DB%40dmin@10.35.4.11:32121/SmartCare}
   profiles:
     active: PRD
 
 server:
-  port: 10241
+  port: 10245
+
+# KingbaseES配置（用于查询在科患者）
+kingbase:
+  url: ${KINGBASE_URL:}
+  username: ${KINGBASE_USERNAME:}
+  password: ${KINGBASE_PASSWORD:}
+  schema: ${KINGBASE_SCHEMA:np_nis_cqchonggang}
+
+# 体征推送配置
+vitalsign:
+  push:
+    url: ${VITALSIGN_PUSH_URL:http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService}
+    connection-timeout: 10000
+    read-timeout: 30000
+    enabled: true
+    max-retry-count: 3
+    max-request-body-length: 4000
+    max-response-body-length: 2000
+  patient:
+    patient-id-source: ${VITALSIGN_PATIENT_ID_SOURCE:mrn}
+    mrn-source: ${VITALSIGN_MRN_SOURCE:hisPid}
+    series: ${VITALSIGN_SERIES:1}
+    ward-code: ${VITALSIGN_WARD_CODE:125011}
+    record-nurse-id: ${VITALSIGN_RECORD_NURSE_ID:dba}
+
 digixmed:
-  #  是否测试
   debug: false
-  #  是否启动回传任务
   isUpload: true
-  #  需要特定病人的体温单的病人ID  多个用 , 隔开 对应Patient.hisPID
   testPid: all
-  #  回传体温单任务的时间间隔
   rcron: 0 0/2 * * * ?
-  #  统计体温单任务的时间间隔
   cron: 0 0/1 * * * ?
-  #  his的体温单接口地址
-  url: http://10.10.50.81:5555/NIS_CQliangping//EwellInterfaceService
   deleteDay: 180
-  #  回传的天数 默认向前追溯一天
   backDay: 1
-  #  统计时间范围
   timePointasd: 7

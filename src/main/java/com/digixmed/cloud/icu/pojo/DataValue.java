@@ -43,6 +43,8 @@
 /*     */   private String vitalsignNVal1;
 /*     */   @XmlElement(name = "vitalsignNVal2")
 /*     */   private String vitalsignNVal2;
+/*     */   @XmlElement(name = "vitalsignNVal3")
+/*     */   private String vitalsignNVal3;
 /*     */   @XmlElement(name = "vitalsignName")
 /*     */   private String vitalsignName;
 /*     */   @XmlElement(name = "vitalsignType")
@@ -159,7 +161,15 @@
 /*     */   public String getVitalsignNVal2() {
 /* 160 */     return this.vitalsignNVal2;
 /*     */   }
-/*     */   
+/*     */
+/*     */   public void setVitalsignNVal3(String vitalsignNVal3) {
+/*     */     this.vitalsignNVal3 = vitalsignNVal3;
+/*     */   }
+/*     */
+/*     */   public String getVitalsignNVal3() {
+/*     */     return this.vitalsignNVal3;
+/*     */   }
+/*     */
 /*     */   public void setVitalsignName(String vitalsignName) {
 /* 164 */     this.vitalsignName = vitalsignName;
 /*     */   }

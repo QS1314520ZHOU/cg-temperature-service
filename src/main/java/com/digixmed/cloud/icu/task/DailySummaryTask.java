@@ -6,7 +6,7 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
-import com.digixmed.cloud.icu.service.PushService;
+import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import com.digixmed.cloud.icu.model.InpatientDTO;
 import org.bson.Document;
@@ -70,7 +70,7 @@ public class DailySummaryTask {
     private PatientIdentityMapper patientIdentityMapper;
 
     @Autowired
-    private PushService pushService;
+    private IntermediateService intermediateService;
 
     @Autowired
     private StoolCountHandler stoolCountHandler;
@@ -187,11 +187,11 @@ public class DailySummaryTask {
                 LocalDateTime sendTime = window.getReportDate();
                 VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, sendTime, patientTraceId);
                 if (heightPayload != null) {
-                    pushService.push(heightPayload, patientTraceId);
+                    intermediateService.upsertPending(heightPayload, patientTraceId);
                 }
                 VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, sendTime, patientTraceId);
                 if (weightPayload != null) {
-                    pushService.push(weightPayload, patientTraceId);
+                    intermediateService.upsertPending(weightPayload, patientTraceId);
                 }
             }
 
@@ -217,7 +217,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = stoolCountHandler.handle(stoolRecord.get(), patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -248,7 +248,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = urineOutputHandler.handle(virtualDoc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -297,7 +297,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = oralIntakeHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
 
@@ -308,7 +308,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = therapyInputHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
 
@@ -318,7 +318,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = totalInputHandler.buildPayload(
                     totalInput.doubleValue(), patient, window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -354,7 +354,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = totalOutputHandler.buildPayload(
                     total.doubleValue(), patient, window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -386,7 +386,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = drainageOutputHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -414,7 +414,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -445,7 +445,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = otherDrainageHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }
@@ -473,7 +473,7 @@ public class DailySummaryTask {
             VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
-                pushService.push(payload, traceId);
+                intermediateService.upsertPending(payload, traceId);
             }
         }
     }

@@ -6,7 +6,7 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
-import com.digixmed.cloud.icu.service.PushService;
+import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import com.digixmed.cloud.icu.model.InpatientDTO;
 import org.bson.Document;
@@ -72,7 +72,7 @@ public class VitalSignScanTask {
     private PatientIdentityMapper patientIdentityMapper;
 
     @Autowired
-    private PushService pushService;
+    private IntermediateService intermediateService;
 
     // 普通体征Handlers
     @Autowired
@@ -192,7 +192,7 @@ public class VitalSignScanTask {
             if (bedside != null) {
                 VitalSignPayload payload = pulseHandler.handle(bedside, patient, planTime, patientTraceId);
                 if (payload != null) {
-                    pushService.push(payload, patientTraceId);
+                    intermediateService.upsertPending(payload, patientTraceId);
                 }
             }
         } catch (Exception e) {
@@ -210,7 +210,7 @@ public class VitalSignScanTask {
             // 血压Handler会自己查询收缩压和舒张压，传入null即可
             VitalSignPayload payload = bloodPressureHandler.handle(null, patient, planTime, patientTraceId);
             if (payload != null) {
-                pushService.push(payload, patientTraceId);
+                intermediateService.upsertPending(payload, patientTraceId);
             }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 血压处理异常",
@@ -238,7 +238,7 @@ public class VitalSignScanTask {
 
             VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
             if (payload != null) {
-                pushService.push(payload, patientTraceId);
+                intermediateService.upsertPending(payload, patientTraceId);
             }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} code={} 处理异常",

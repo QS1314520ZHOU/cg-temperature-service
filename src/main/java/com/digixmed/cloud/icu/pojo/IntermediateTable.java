@@ -203,4 +203,13 @@ public class IntermediateTable {
     public String getReponseMsg() {
         return this.responseMsg;
     }
+
+    // 兼容旧代码
+    public void setCreateTime(Date createTime) {
+        this.createdAt = createTime;
+    }
+
+    public Date getCreateTime() {
+        return this.createdAt;
+    }
 }

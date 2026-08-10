@@ -6,6 +6,7 @@ import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -14,7 +15,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.Date;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 推送任务
@@ -50,7 +50,7 @@ public class PushTask {
             Query query = new Query(Criteria.where("status").in("PENDING", "RETRY"))
                     .limit(100); // 每次最多处理100条
 
-            List<Map<String, Object>> records = mongoTemplate.find(query, Map.class, COLLECTION_NAME);
+            List<Document> records = mongoTemplate.find(query, Document.class, COLLECTION_NAME);
 
             if (records.isEmpty()) {
                 log.info("STEP_10_PUSH_STARTED traceId={} 无待推送记录", traceId);
@@ -64,7 +64,7 @@ public class PushTask {
             int deadCount = 0;
             int skippedCount = 0;
 
-            for (Map<String, Object> record : records) {
+            for (Document record : records) {
                 try {
                     VitalSignPayload payload = convertToPayload(record);
                     if (payload == null) {
@@ -101,9 +101,8 @@ public class PushTask {
         }
     }
 
-    private VitalSignPayload convertToPayload(Map<String, Object> record) {
+    private VitalSignPayload convertToPayload(Document record) {
         try {
-            String planTimeStr = record.get("planTime") != null ? record.get("planTime").toString() : null;
             java.time.LocalDateTime planTime = null;
             if (record.get("planTime") instanceof Date) {
                 planTime = ((Date) record.get("planTime")).toInstant()

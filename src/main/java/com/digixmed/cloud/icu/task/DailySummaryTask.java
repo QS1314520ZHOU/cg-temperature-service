@@ -146,9 +146,6 @@ public class DailySummaryTask {
             // 饮入量
             processOralIntake(records, patient, pid, window, patientTraceId);
 
-            // 治疗输入量
-            processTherapyInput(records, patient, pid, window, patientTraceId);
-
             // 身高体重（检查是否需要发送）
             if (heightWeightHandler.shouldSendHeightWeight(inpatient.getPatientId(), today)) {
                 LocalDateTime sendTime = window.getReportDate();
@@ -163,7 +160,7 @@ public class DailySummaryTask {
             }
 
         } catch (Exception e) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 汇总异常", patientTraceId, pid, e);
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 汇总异常", patientTraceId, e);
         }
     }
 

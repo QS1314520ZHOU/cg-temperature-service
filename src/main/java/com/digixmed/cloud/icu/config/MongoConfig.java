@@ -1,18 +1,36 @@
 package com.digixmed.cloud.icu.config;
 
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.data.mongodb.core.convert.MongoCustomConversions;
+
+import java.util.Arrays;
 
 /**
  * MongoDB自定义配置
  *
- * 注意：不要注册全局的 Integer<->Boolean 转换器，
- * 因为 Spring Data MongoDB 内部也使用 Integer 类型（如排序方向），
- * 全局转换器会干扰这些内部操作导致查询失败。
- *
- * MongoDB 中 Boolean 字段存储为 Integer(0/1) 的问题，
- * 通过修改 POJO 字段类型为 Integer 来适配。
+ * 注册 Boolean → Integer 转换器，用于读取MongoDB中已有的Boolean类型数据。
+ * IntermediateTable的字段已改为Integer类型，但历史数据仍是Boolean。
  */
 @Configuration
 public class MongoConfig {
-    // 无全局转换器，避免干扰 Spring Data MongoDB 内部操作
+
+    @Bean
+    public MongoCustomConversions customConversions() {
+        return new MongoCustomConversions(Arrays.asList(
+                new BooleanToIntegerConverter()
+        ));
+    }
+
+    /**
+     * 将MongoDB中的Boolean值转换为Integer
+     * true → 1, false → 0
+     */
+    static class BooleanToIntegerConverter implements Converter<Boolean, Integer> {
+        @Override
+        public Integer convert(Boolean source) {
+            return source != null && source ? 1 : 0;
+        }
+    }
 }

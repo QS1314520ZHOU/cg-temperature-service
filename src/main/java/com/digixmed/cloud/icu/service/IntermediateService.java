@@ -86,7 +86,7 @@ public class IntermediateService {
                 // Identical payload already pushed successfully -> skip
                 result.put("action", "SKIP");
                 result.put("status", "SUCCESS");
-                result.put("id", existing.getString("_id"));
+                result.put("id", existing.get("_id").toString());
                 return result;
             }
 
@@ -102,7 +102,7 @@ public class IntermediateService {
 
             result.put("action", "UPDATE");
             result.put("status", "PENDING");
-            result.put("id", existing.getString("_id"));
+            result.put("id", existing.get("_id").toString());
             return result;
         }
 

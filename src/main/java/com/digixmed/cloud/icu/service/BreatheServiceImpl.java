@@ -26,11 +26,11 @@ public class BreatheServiceImpl
         /* 26 */
         if (ObjectUtil.isNotEmpty(huXiMoShi)) {
             /* 27 */
-            table.setInHuXiJi(Boolean.TRUE);
+            table.setInHuXiJi(Integer.valueOf(1));
         } else {
 
             /* 30 */
-            table.setInHuXiJi(Boolean.FALSE);
+            table.setInHuXiJi(Integer.valueOf(0));
         }
         /* 32 */
         return table;

@@ -229,7 +229,8 @@ public abstract class HandleService {
             /* 173 */
             intermediateTable.setSignUnit(DataUtils.getUnitByCode(code));
             /* 174 */
-            intermediateTable.setIsValid(getValueFromDocByKey(bedside, "valid", Boolean.class));
+            Boolean validBool = (Boolean) getValueFromDocByKey(bedside, "valid", Boolean.class);
+            intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /* 175 */
             intermediateTable.setMrn(getValueFromDocByKey(patient, "mrn", String.class));
             /* 176 */
@@ -239,9 +240,9 @@ public abstract class HandleService {
             /* 178 */
             intermediateTable.setPatientId(getValueFromDocByKey(patient, "hisPid", String.class));
             /* 179 */
-            intermediateTable.setIsFirst(Boolean.valueOf(false));
+            intermediateTable.setIsFirst(Integer.valueOf(0));
             /* 180 */
-            intermediateTable.setIsUpload(Boolean.valueOf(false));
+            intermediateTable.setIsUpload(Integer.valueOf(0));
             /* 181 */
             String edituser = getTheAccountIdInTime(pid, timePoint);
             /* 182 */
@@ -274,7 +275,7 @@ public abstract class HandleService {
         /* 198 */
         if (table != null) {
             /* 199 */
-            table.setIsFirst(Boolean.valueOf(true));
+            table.setIsFirst(Integer.valueOf(1));
 
             /* 201 */
             Date timePoint1 = table.getTimePoint();

@@ -117,11 +117,11 @@ public class IntermediateTable {
     @ApiModelProperty(value = "体征编码", dataType = "String", name = "signCode")
     private String signCode;
 
-    @ApiModelProperty(value = "是否有效", dataType = "Boolean", name = "isValid")
-    private Boolean isValid;
+    @ApiModelProperty(value = "是否有效", dataType = "Integer", name = "isValid")
+    private Integer isValid;
 
-    @ApiModelProperty(value = "是否回传失败", dataType = "Boolean", name = "failed")
-    private Boolean failed = false;
+    @ApiModelProperty(value = "是否回传失败", dataType = "Integer", name = "failed")
+    private Integer failed = 0;
 
     @ApiModelProperty(value = "失败原因", dataType = "String", name = "errorMsg")
     private String errorMsg;
@@ -141,8 +141,8 @@ public class IntermediateTable {
     @ApiModelProperty(value = "病人id（mongo）", dataType = "String", name = "pid")
     private String pid;
 
-    @ApiModelProperty(value = "是否入科第一条记录", dataType = "Boolean", name = "isFirst")
-    private Boolean isFirst;
+    @ApiModelProperty(value = "是否入科第一条记录", dataType = "Integer", name = "isFirst")
+    private Integer isFirst;
 
     @ApiModelProperty(value = "体征记录人", dataType = "String", name = "authorName")
     private String authorName;
@@ -153,8 +153,8 @@ public class IntermediateTable {
     @ApiModelProperty(value = "bedside表的id", dataType = "String", name = "bedSideId")
     private String bedSideId;
 
-    @ApiModelProperty(value = "是否回传", dataType = "Boolean", name = "isUpload")
-    private Boolean isUpload;
+    @ApiModelProperty(value = "是否回传", dataType = "Integer", name = "isUpload")
+    private Integer isUpload;
 
     @ApiModelProperty(value = "科室编码", dataType = "String", name = "deptCode")
     private String deptCode;
@@ -174,8 +174,8 @@ public class IntermediateTable {
     @ApiModelProperty(value = "响应报文", dataType = "String", name = "responseMsg")
     private String responseMsg;
 
-    @ApiModelProperty(value = "是否使用呼吸机", dataType = "Boolean", name = "inHuXiJi")
-    private Boolean inHuXiJi;
+    @ApiModelProperty(value = "是否使用呼吸机", dataType = "Integer", name = "inHuXiJi")
+    private Integer inHuXiJi;
 
     @ApiModelProperty(value = "发送时间（旧）", dataType = "Date", name = "returnTime")
     private Date returnTime;

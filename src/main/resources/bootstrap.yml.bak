@@ -4,15 +4,12 @@ spring:
   cloud:
     nacos:
       config:
-        server-addr: localhost:50001
-        file-extension: yml
+        enabled: false
       discovery:
-        heart-beat-timeout: 1000
-        heart-beat-interval: 1000
-      server-addr: localhost:50001
+        enabled: false
   data:
     mongodb:
-      uri: ${MONGODB_URI}
+      uri: mongodb://admin:Dxm99%2A@10.35.4.11:32121/SmartCare?authSource=admin
   profiles:
     active: PRD
 
@@ -21,10 +18,10 @@ server:
 
 # KingbaseES配置（用于查询在科患者）
 kingbase:
-  url: ${KINGBASE_URL:}
-  username: ${KINGBASE_USERNAME:}
-  password: ${KINGBASE_PASSWORD:}
-  schema: ${KINGBASE_SCHEMA:np_nis_cqchonggang}
+  url: jdbc:postgresql://10.35.4.102:54321/ewell
+  username: YDCF
+  password: "YDCF@123!"
+  schema: np_nis_cqchonggang
 
 # 体征推送配置
 vitalsign:
@@ -44,6 +41,7 @@ vitalsign:
     record-nurse-id: ${VITALSIGN_RECORD_NURSE_ID:dba}
 
 digixmed:
+  url: http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService
   debug: false
   isUpload: true
   testPid: all

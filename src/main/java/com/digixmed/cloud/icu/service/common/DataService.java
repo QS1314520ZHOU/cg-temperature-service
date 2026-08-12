@@ -475,7 +475,7 @@ public class DataService {
                         Date addmitTime = DateUtils.formatTimePoint((Date) pidWithAddmitTime.get(pid), timePointasd.intValue());
 
                         if (addmitTime != null && addmitTime.equals(intermediateTable.getTimePoint())) {
-                            intermediateTable.setIsFirst(Boolean.valueOf(true));
+                            intermediateTable.setIsFirst(Integer.valueOf(1));
                         }
 
                         if (shit && intermediateTable.getChlidList() != null) {
@@ -545,7 +545,7 @@ public class DataService {
         UrinateServiceImpl urinateServiceImpl;
         FaecesCountServiceImpl faecesCountServiceImpl;
         BreatheServiceImpl breatheServiceImpl;
-        DefaultServiceImpl defaultServiceImpl=new DefaultServiceImpl();
+        DefaultServiceImpl defaultServiceImpl=this.defaultServiceImpl;
         /* 409 */
         if (doc == null) {
             /* 410 */

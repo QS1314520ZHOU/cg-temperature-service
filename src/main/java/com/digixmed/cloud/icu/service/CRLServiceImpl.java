@@ -19,14 +19,11 @@ import cn.hutool.core.convert.Convert;
  import org.slf4j.Logger;
  import org.slf4j.LoggerFactory;
  import org.springframework.beans.factory.annotation.Value;
- import org.springframework.cloud.context.config.annotation.RefreshScope;
  import org.springframework.stereotype.Service;
 
 
 
 @Service
-
-@RefreshScope
  public class CRLServiceImpl
         extends HandleService
         implements BaseService {
@@ -92,7 +89,8 @@ import cn.hutool.core.convert.Convert;
             /*  64 */
             intermediateTable.setSignUnit(DataUtils.getUnitByCode(code));
             /*  65 */
-            intermediateTable.setIsValid((Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class));
+            Boolean validBool = (Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class);
+            intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /*  66 */
             intermediateTable.setMrn((String) getValueFromDocByKey(patient, "mrn", String.class));
             /*  67 */
@@ -102,9 +100,9 @@ import cn.hutool.core.convert.Convert;
             /*  69 */
             intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "hisPid", String.class));
             /*  70 */
-            intermediateTable.setIsFirst(Boolean.valueOf(false));
+            intermediateTable.setIsFirst(Integer.valueOf(0));
             /*  71 */
-            intermediateTable.setIsUpload(Boolean.valueOf(false));
+            intermediateTable.setIsUpload(Integer.valueOf(0));
             /*  72 */
             String edituser = getTheAccountIdInTime(pid, startTime);
             /*  73 */

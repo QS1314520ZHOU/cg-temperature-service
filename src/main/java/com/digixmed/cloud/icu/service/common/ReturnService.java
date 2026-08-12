@@ -22,11 +22,9 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.stereotype.Service;
 
 @Service
-@RefreshScope
 public class ReturnService {
     /*  29 */   private static final Logger log = LoggerFactory.getLogger(ReturnService.class);
 
@@ -138,6 +136,9 @@ public class ReturnService {
                 /* 107 */
                 DataValue dataValue = tableToData(tableInfo);
                 /* 108 */
+                if (dataValue == null) {
+                    continue;
+                }
                 if (data != null) {
                     /* 109 */
                     dataValues.add(dataValue);
@@ -230,6 +231,15 @@ public class ReturnService {
         DataValue data = new DataValue();
 
         try {
+            // 跳过新流程记录（已有requestBodyMasked/responseBodyMasked的记录已由PushTask处理）
+            if (tableInfo.getRequestBodyMasked() != null || tableInfo.getResponseBodyMasked() != null) {
+                return null;
+            }
+            // 跳过signCode为空的记录（新流程记录没有signCode字段）
+            if (tableInfo.getSignCode() == null) {
+                return null;
+            }
+
             /* 184 */
             String vitalsignType = DataUtils.getSignCodeByCode(tableInfo.getSignCode());
             /* 185 */
@@ -238,7 +248,7 @@ public class ReturnService {
             /* 187 */
             if (tableInfo.getIsValid() != null) {
                 /* 188 */
-                valid = Integer.valueOf(tableInfo.getIsValid().booleanValue() ? 1 : 0);
+                valid = tableInfo.getIsValid();
             }
             /* 190 */
             data.setIsValid(valid.intValue());
@@ -266,6 +276,9 @@ public class ReturnService {
             data.setUnit(tableInfo.getSignUnit());
             /* 202 */
             String signValue = tableInfo.getSignValue();
+            if (signValue == null) {
+                signValue = "";
+            }
 
 
             /* 205 */
@@ -307,7 +320,7 @@ public class ReturnService {
                 /* 226 */
                 data.setVitalsignNVal1(signValue);
                 /* 227 */
-                if (tableInfo.getInHuXiJi().booleanValue()) {
+                if (tableInfo.getInHuXiJi() != null && tableInfo.getInHuXiJi() != 0) {
                     /* 228 */
                     data.setVitalsignSVal1("呼吸机");
                 } else {

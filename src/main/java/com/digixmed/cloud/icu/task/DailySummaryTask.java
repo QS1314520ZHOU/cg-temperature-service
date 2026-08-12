@@ -525,8 +525,11 @@ public class DailySummaryTask {
     }
 
     private Document findMongoPatient(String patientId) {
-        Query query = new Query(Criteria.where("mrn").is(patientId)
-                .orOperator(Criteria.where("hisPid").is(patientId)));
+        // 通过mrn或hisPid查询（OR逻辑）
+        Query query = new Query(new Criteria().orOperator(
+                Criteria.where("mrn").is(patientId),
+                Criteria.where("hisPid").is(patientId)
+        ));
         return mongoTemplate.findOne(query, Document.class, "patient");
     }
 

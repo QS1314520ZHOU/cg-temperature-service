@@ -18,11 +18,9 @@ import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.stereotype.Service;
 
 @Service
-@RefreshScope
 public class FaecesServiceImpl
         extends HandleService implements BaseService {
     /*  26 */   private static final Logger log = LoggerFactory.getLogger(FaecesServiceImpl.class);
@@ -76,7 +74,8 @@ public class FaecesServiceImpl
             /*  55 */
             intermediateTable.setSignUnit(DataUtils.getUnitByCode(code));
             /*  56 */
-            intermediateTable.setIsValid((Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class));
+            Boolean validBool = (Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class);
+            intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /*  57 */
             intermediateTable.setMrn((String) getValueFromDocByKey(patient, "mrn", String.class));
             /*  58 */
@@ -86,9 +85,9 @@ public class FaecesServiceImpl
             /*  60 */
             intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "hisPid", String.class));
             /*  61 */
-            intermediateTable.setIsFirst(Boolean.valueOf(false));
+            intermediateTable.setIsFirst(Integer.valueOf(0));
             /*  62 */
-            intermediateTable.setIsUpload(Boolean.valueOf(false));
+            intermediateTable.setIsUpload(Integer.valueOf(0));
             /*  63 */
             String edituser = getTheAccountIdInTime(pid, endTime);
             /*  64 */

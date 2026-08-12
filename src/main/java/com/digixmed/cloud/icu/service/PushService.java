@@ -363,8 +363,12 @@ public class PushService {
         dataValue.setMrn(payload.getMrn());
         dataValue.setPatientId(payload.getPatientId());
         dataValue.setPatientName(payload.getPatientName());
-        dataValue.setPlanTime(Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
-        dataValue.setRecordTime(Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        if (payload.getPlanTime() != null) {
+            dataValue.setPlanTime(Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        }
+        if (payload.getRecordTime() != null) {
+            dataValue.setRecordTime(Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
+        }
         dataValue.setRecordNurseId(payload.getRecordNurseId());
         dataValue.setRecordNurseName(payload.getRecordNurseName());
         dataValue.setSeries(payload.getSeries());

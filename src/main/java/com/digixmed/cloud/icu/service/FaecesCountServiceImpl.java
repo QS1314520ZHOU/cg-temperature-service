@@ -77,7 +77,8 @@ public class FaecesCountServiceImpl
             /*  55 */
             intermediateTable.setSignUnit(DataUtils.getUnitByCode(code));
             /*  56 */
-            intermediateTable.setIsValid((Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class));
+            Boolean validBool = (Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class);
+            intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /*  57 */
             intermediateTable.setMrn((String) getValueFromDocByKey(patient, "mrn", String.class));
             /*  58 */
@@ -87,9 +88,9 @@ public class FaecesCountServiceImpl
             /*  60 */
             intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "hisPid", String.class));
             /*  61 */
-            intermediateTable.setIsFirst(Boolean.valueOf(false));
+            intermediateTable.setIsFirst(Integer.valueOf(0));
             /*  62 */
-            intermediateTable.setIsUpload(Boolean.valueOf(false));
+            intermediateTable.setIsUpload(Integer.valueOf(0));
             /*  63 */
             String edituser = getTheAccountIdInTime(pid, endTime);
             /*  64 */

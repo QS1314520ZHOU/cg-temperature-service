@@ -246,8 +246,8 @@ public class MongoDao
        update.set("LastEditTime", tableInfo.getLastEditTime());
        update.set("signValue", tableInfo.getSignValue());
        update.set("isValid", tableInfo.getIsValid());
-      update.set("isUpload", Boolean.valueOf(false));
-       update.set("failed", Boolean.valueOf(false));
+      update.set("isUpload", Integer.valueOf(0));
+       update.set("failed", Integer.valueOf(0));
        update.set("authorName", tableInfo.getAuthorName());
       update.set("authorId", tableInfo.getAuthorId());
       update.set("chlidList", tableInfo.getChlidList());
@@ -261,14 +261,14 @@ public class MongoDao
   
   public void updateSuccessLog(IntermediateTable tableInfo, Boolean isSuccess, String error) {
     Update update = new Update();
-     update.set("isUpload", isSuccess);
+     update.set("isUpload", isSuccess ? Integer.valueOf(1) : Integer.valueOf(0));
      if (!isSuccess.booleanValue()) {
-       update.set("failed", Boolean.valueOf(true));
+       update.set("failed", Integer.valueOf(1));
        update.set("errorMsg", error);
     } else {
-       update.set("failed", Boolean.valueOf(false));
-      update.set("isUpload", Boolean.valueOf(true));
-    } 
+       update.set("failed", Integer.valueOf(0));
+      update.set("isUpload", Integer.valueOf(1));
+    }
     update.set("requestMsg", tableInfo.getRequestMsg());
      update.set("reponseMsg", tableInfo.getReponseMsg());
      update.set("returnTime", tableInfo.getReturnTime());
@@ -295,7 +295,7 @@ public class MongoDao
 
   
   public List<IntermediateTable> selectNoUploadInfo() {
-     Query query = new Query((CriteriaDefinition)Criteria.where("isUpload").ne(Boolean.valueOf(true)).and("failed").ne(Boolean.valueOf(true)));
+     Query query = new Query((CriteriaDefinition)Criteria.where("isUpload").ne(Integer.valueOf(1)).and("failed").ne(Integer.valueOf(1)));
      return this.mongoTemplate.find(query, IntermediateTable.class);
   }
   
@@ -308,14 +308,14 @@ public class MongoDao
      return (Document)this.mongoTemplate.findOne(query, Document.class, "patient");
   }
   public List<IntermediateTable> selectNoUploadInfo(String[] pid) {
-     Query query = new Query((CriteriaDefinition)Criteria.where("isUpload").ne(Boolean.valueOf(true)).and("failed").ne(Boolean.valueOf(true)).and("patientId").in((Object[])pid));
+     Query query = new Query((CriteriaDefinition)Criteria.where("isUpload").ne(Integer.valueOf(1)).and("failed").ne(Integer.valueOf(1)).and("patientId").in((Object[])pid));
     return this.mongoTemplate.find(query, IntermediateTable.class);
   }
   
   public void updateFailLog(String patientId, String signName, Date timePoint, String error) {
      if (patientId != null && signName != null && timePoint != null) {
       Update update = new Update();
-      update.set("failed", Boolean.valueOf(true));
+      update.set("failed", Integer.valueOf(1));
       update.set("failReason", error);
       this.mongoTemplate.updateMulti(Query.query((CriteriaDefinition)Criteria.where("signName").is(signName).and("timePoint").is(timePoint).and("patientId").is(patientId)), update, IntermediateTable.class);
     } 

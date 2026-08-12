@@ -13,13 +13,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 
 @Component
-@RefreshScope
 public class ScheduleTask {
     /*  23 */   private static final Logger log = LoggerFactory.getLogger(ScheduleTask.class);
 
@@ -73,7 +71,7 @@ public class ScheduleTask {
             /*  63 */
             String s = DateUtil.format(now, "yyyy-MM-dd HH:mm:ss");
             /*  64 */
-            log.error(s + "入量的统计的定时任务报错:" + s);
+            log.error(s + "入量的统计的定时任务报错:" + s, e);
         } finally {
             /*  66 */
             log.info("{} --结束执行入量的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
@@ -98,7 +96,7 @@ public class ScheduleTask {
             /*  79 */
             String s = DateUtil.format(now, "yyyy-MM-dd HH:mm:ss");
             /*  80 */
-            log.error(s + "出量的统计的定时任务报错:" + s);
+            log.error(s + "出量的统计的定时任务报错:" + s, e);
         } finally {
             /*  82 */
             log.info("{} --结束执行出量的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
@@ -123,7 +121,7 @@ public class ScheduleTask {
             /*  95 */
             String s = DateUtil.format(now, "yyyy-MM-dd HH:mm:ss");
             /*  96 */
-            log.error(s + "大小便的统计的定时任务报错:" + s);
+            log.error(s + "大小便的统计的定时任务报错:" + s, e);
         } finally {
             /*  98 */
             log.info("{} --结束大小便的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
@@ -150,7 +148,7 @@ public class ScheduleTask {
             /* 112 */
             String s = DateUtil.format(lastTime, "yyyy-MM-dd HH:mm:ss");
             /* 113 */
-            log.error(s + "一般体征的记录的一般体征定时任务报错:" + s);
+            log.error(s + "一般体征的记录的一般体征定时任务报错:" + s, e);
         } finally {
             /* 115 */
             log.info("{} --结束一般体征的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));

@@ -16,7 +16,7 @@
 /*    */   }
 /*    */ 
 /*    */   
-/*    */   @XmlElement(name = "date", type = DataValue.class)
+/*    */   @XmlElement(name = "data", type = DataValue.class)
 /*    */   List<DataValue> data;
 /*    */   
 /*    */   public Data() {}

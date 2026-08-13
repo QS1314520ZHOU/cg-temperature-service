@@ -39,8 +39,8 @@
    
    @PostMapping({"/rewirte"})
    @ApiOperation(value = "观察项统计", notes = "观察项统计")
-   @ApiImplicitParam(name = "date", value = "结束时间yyyy-MM-dd的格式", required = true, dataType = "String", paramType = "query")
-   public String rewirte(@RequestParam("date") String date) {
+   @ApiImplicitParam(name = "data", value = "结束时间yyyy-MM-dd的格式", required = true, dataType = "String", paramType = "query")
+   public String rewirte(@RequestParam("data") String date) {
      this.dataService.selectVitalSignsAfterLastTime((Date)DateUtil.parse(date, "yyyy-MM-dd"));
     return "没有bug";
    }
@@ -59,8 +59,8 @@
    
    @PostMapping({"/clo"})
    @ApiOperation(value = "出入量统计", notes = "出入量统计")
-   @ApiImplicitParams({@ApiImplicitParam(name = "date", value = "时间格式yyyy-MM-dd HH:mm:ss", required = true, dataType = "Date", paramType = "query"), @ApiImplicitParam(name = "type", value = "输入类型: 0-入量、1-出量、2-其他出量、3-出入量", required = true, dataType = "String", paramType = "query")})
-   public String newcl(@RequestParam("date") String date, @RequestParam(value = "type", required = false, defaultValue = "3") String type) throws ParseException {
+   @ApiImplicitParams({@ApiImplicitParam(name = "data", value = "时间格式yyyy-MM-dd HH:mm:ss", required = true, dataType = "Date", paramType = "query"), @ApiImplicitParam(name = "type", value = "输入类型: 0-入量、1-出量、2-其他出量、3-出入量", required = true, dataType = "String", paramType = "query")})
+   public String newcl(@RequestParam("data") String date, @RequestParam(value = "type", required = false, defaultValue = "3") String type) throws ParseException {
      Date date1 = DateUtils.getDateTime1(date);
      if ("0".equals(type)) {
       this.dataService.selectCRLiangAfterLastTime_new(date1, Boolean.valueOf(true), Integer.valueOf(1), Integer.valueOf(7));
@@ -82,8 +82,8 @@
    
    @PostMapping({"/testxy"})
    @ApiOperation(value = "普通体征方法血压", notes = "普通体征方法血压")
-   @ApiImplicitParam(name = "date", value = "结束时间yyyy-MM-dd的格式", required = true, dataType = "String", paramType = "query")
-   public String testxy(@RequestParam("date") String date) {
+   @ApiImplicitParam(name = "data", value = "结束时间yyyy-MM-dd的格式", required = true, dataType = "String", paramType = "query")
+   public String testxy(@RequestParam("data") String date) {
      DateTime dateTimes = DateUtil.parse(date, "yyyy-MM-dd");
      this.dataService.selectVitalSignsAfterLastTimeXY((Date)dateTimes);
     return "没有bug";

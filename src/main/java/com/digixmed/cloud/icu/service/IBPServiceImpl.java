@@ -52,9 +52,10 @@ public class IBPServiceImpl
         /* 40 */
         String ibpsStrVal = (String) getValueFromDocByKey(ibps, "strVal", String.class);
         /* 41 */
-        if (ibpsStrVal != null && ibpsStrVal != null) {
+        if (ibpsStrVal != null && ibpdStrVal != null) {
             /* 42 */
-            String strVal = ibpsStrVal + "/" + ibpsStrVal;
+            // 收缩压/舒张压
+            String strVal = ibpsStrVal + "/" + ibpdStrVal;
             /* 43 */
             table.setSignValue(strVal);
 

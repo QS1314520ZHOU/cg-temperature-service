@@ -125,29 +125,38 @@ public class PushService {
         String responseMsg = response.get("msg");
         String responseCode = response.get("code");
 
+        // 详细日志：请求和响应内容
         log.info("STEP_11_PUSH_RESPONDED traceId={} httpCode={} durationMs={}", traceId, responseCode, duration);
+        log.info("STEP_11_PUSH_REQUEST_DETAIL traceId={} patient={} metric={} requestXml长度={}",
+                traceId, patientIdMasked, payload.getVitalsignType(), requestXml != null ? requestXml.length() : 0);
+        log.info("STEP_11_PUSH_RESPONSE_DETAIL traceId={} responseCode={} responseMsg={}",
+                traceId, responseCode, responseMsg != null ? responseMsg : "null");
 
         // 判断结果
         if ("200".equals(responseCode)) {
             if (responseMsg != null && responseMsg.contains("成功")) {
                 updateRecordAfterPush(idempotencyKey, true, null, null, requestXml, responseMsg);
-                log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送成功", traceId);
+                log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送成功 patient={} metric={}",
+                        traceId, patientIdMasked, payload.getVitalsignType());
                 return PushResult.SUCCESS;
             } else {
                 String errorMsg = extractErrorMsg(responseMsg);
                 updateRecordAfterPush(idempotencyKey, false, "BUSINESS_ERROR", errorMsg, requestXml, responseMsg);
-                log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} 业务错误: {}", traceId, errorMsg);
+                log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} 业务错误: {} patient={} metric={} responseMsg={}",
+                        traceId, errorMsg, patientIdMasked, payload.getVitalsignType(), responseMsg);
                 return PushResult.DEAD;
             }
         } else if ("4".equals(responseCode.substring(0, 1))) {
             // 4xx错误
             updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
-            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP客户端错误: code={}", traceId, responseCode);
+            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP客户端错误: code={} patient={} metric={}",
+                    traceId, responseCode, patientIdMasked, payload.getVitalsignType());
             return PushResult.DEAD;
         } else {
             // 5xx或其他错误，允许重试
             updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
-            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP服务端错误，可重试: code={}", traceId, responseCode);
+            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP服务端错误，可重试: code={} patient={} metric={}",
+                    traceId, responseCode, patientIdMasked, payload.getVitalsignType());
             return PushResult.RETRY;
         }
     }

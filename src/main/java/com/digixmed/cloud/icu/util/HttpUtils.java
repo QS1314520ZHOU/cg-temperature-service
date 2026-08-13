@@ -137,6 +137,10 @@ public class HttpUtils {
         BufferedReader br = null;
         /* 110 */
         Map<String, String> result = new HashMap<>();
+
+        log.info("HTTP_POST 请求URL: {}", httpUrl);
+        log.info("HTTP_POST 请求体长度: {}", param != null ? param.length() : 0);
+
         try {
             /* 112 */
             URL url = new URL(httpUrl);
@@ -171,9 +175,13 @@ public class HttpUtils {
                 /* 131 */
                 os.write(param.getBytes());
             }
+            os.flush();
+
+            int responseCode = connection.getResponseCode();
+            log.info("HTTP_POST 响应状态码: {}", responseCode);
 
             /* 134 */
-            if (connection.getResponseCode() == 200) {
+            if (responseCode == 200) {
                 /* 135 */
                 is = connection.getInputStream();
 
@@ -199,6 +207,8 @@ public class HttpUtils {
                 result.put("success", "true");
                 /* 148 */
                 result.put("msg", sbf.toString());
+
+                log.info("HTTP_POST 响应体: {}", sbf.toString());
             } else {
                 try {
                     /* 151 */
@@ -221,9 +231,11 @@ public class HttpUtils {
                     /* 161 */
                     result.put("msg", sbf.toString());
                     /* 162 */
+
+                    log.warn("HTTP_POST 错误响应体: {}", sbf.toString());
                 } catch (Exception e) {
                     /* 163 */
-                    log.error(e.getMessage());
+                    log.error("HTTP_POST 读取错误响应失败: {}", e.getMessage());
                 }
 
                 /* 166 */
@@ -232,6 +244,8 @@ public class HttpUtils {
                 result.put("result", "请求失败");
                 /* 168 */
                 result.put("success", "false");
+
+                log.warn("HTTP_POST 请求失败: url={} responseCode={}", httpUrl, connection.getResponseCode());
             }
             /* 170 */
         } catch (MalformedURLException e) {

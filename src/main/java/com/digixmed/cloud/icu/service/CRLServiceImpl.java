@@ -92,13 +92,13 @@ import cn.hutool.core.convert.Convert;
             Boolean validBool = (Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class);
             intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /*  66 */
-            intermediateTable.setMrn((String) getValueFromDocByKey(patient, "mrn", String.class));
+            intermediateTable.setMrn((String) getValueFromDocByKey(patient, "hisPid", String.class));
             /*  67 */
             intermediateTable.setZycs((String) getValueFromDocByKey(patient, "hospitalTime", String.class));
             /*  68 */
             intermediateTable.setPatientName((String) getValueFromDocByKey(patient, "name", String.class));
             /*  69 */
-            intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "hisPid", String.class));
+            intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "mrn", String.class));
             /*  70 */
             intermediateTable.setIsFirst(Integer.valueOf(0));
             /*  71 */

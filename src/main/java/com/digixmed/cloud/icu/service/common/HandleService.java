@@ -232,13 +232,13 @@ public abstract class HandleService {
             Boolean validBool = (Boolean) getValueFromDocByKey(bedside, "valid", Boolean.class);
             intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /* 175 */
-            intermediateTable.setMrn(getValueFromDocByKey(patient, "mrn", String.class));
+            intermediateTable.setPatientId(getValueFromDocByKey(patient, "mrn", String.class));
             /* 176 */
             intermediateTable.setZycs(getValueFromDocByKey(patient, "hospitalTime", String.class));
             /* 177 */
             intermediateTable.setPatientName(getValueFromDocByKey(patient, "name", String.class));
             /* 178 */
-            intermediateTable.setPatientId(getValueFromDocByKey(patient, "hisPid", String.class));
+            intermediateTable.setMrn(getValueFromDocByKey(patient, "hisPid", String.class));
             /* 179 */
             intermediateTable.setIsFirst(Integer.valueOf(0));
             /* 180 */

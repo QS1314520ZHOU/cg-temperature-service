@@ -84,13 +84,13 @@ public class UrinateServiceImpl
             Boolean validBool = (Boolean) getValueFromDocByKey(crlDoc, "valid", Boolean.class);
             intermediateTable.setIsValid(validBool != null && validBool ? 1 : 0);
             /*  62 */
-            intermediateTable.setMrn((String) getValueFromDocByKey(patient, "mrn", String.class));
+            intermediateTable.setMrn((String) getValueFromDocByKey(patient, "hisPid", String.class));
             /*  63 */
             intermediateTable.setZycs((String) getValueFromDocByKey(patient, "hospitalTime", String.class));
             /*  64 */
             intermediateTable.setPatientName((String) getValueFromDocByKey(patient, "name", String.class));
             /*  65 */
-            intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "hisPid", String.class));
+            intermediateTable.setPatientId((String) getValueFromDocByKey(patient, "mrn", String.class));
             /*  66 */
             intermediateTable.setIsFirst(Integer.valueOf(0));
             /*  67 */

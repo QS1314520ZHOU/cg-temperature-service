@@ -263,7 +263,7 @@ public class ReturnService {
             /* 195 */
             data.setRecordNurseName(tableInfo.getAuthorName());
             /* 196 */
-            data.setWardCode("2006");
+            data.setWardCode("125011");
             /* 197 */
             data.setPlanTime(tableInfo.getTimePoint());
             /* 198 */
@@ -293,7 +293,9 @@ public class ReturnService {
                 /* 210 */
                 data.setVitalsignNVal1(signValues[0]);
                 /* 211 */
-                data.setVitalsignNVal2(signValues[1]);
+                if (signValues.length > 1) {
+                    data.setVitalsignNVal2(signValues[1]);
+                }
                 /* 212 */
             } else if ("param_daBianCiShu".contains(tableInfo.getSignCode()) || "param_daBianAmount".contains(tableInfo.getSignCode())) {
                 /* 213 */

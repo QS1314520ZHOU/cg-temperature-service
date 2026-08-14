@@ -91,6 +91,8 @@ public class ScheduleTask {
             this.dataService.selectCRLiangAfterLastTime_new(now, Boolean.valueOf(false), this.backDay, this.timePointasd);
             /*  77 */
             this.dataService.selectChuLiangOtherAfterLastTime_new(now, this.backDay, this.timePointasd);
+            /* 仅在执行成功后推进水位，异常时保留原 lastTime，避免该时间窗数据永久漏采 */
+            MyConfig.LASTEXECUTIONTIME_ChuLiang = now;
             /*  78 */
         } catch (Exception e) {
             /*  79 */
@@ -100,8 +102,6 @@ public class ScheduleTask {
         } finally {
             /*  82 */
             log.info("{} --结束执行出量的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
-            /*  83 */
-            MyConfig.LASTEXECUTIONTIME_ChuLiang = now;
         }
     }
 
@@ -116,6 +116,8 @@ public class ScheduleTask {
             log.info(DateUtil.format(now, "yyyy-MM-dd HH:mm:ss") + "--开始执行大小便的统计");
             /*  93 */
             this.dataService.selectDXLiangAfterLastTime(now, this.backDay, this.timePointasd);
+            /* 仅在执行成功后推进水位 */
+            MyConfig.LASTEXECUTIONTIME_DX = now;
             /*  94 */
         } catch (Exception e) {
             /*  95 */
@@ -125,8 +127,6 @@ public class ScheduleTask {
         } finally {
             /*  98 */
             log.info("{} --结束大小便的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
-            /*  99 */
-            MyConfig.LASTEXECUTIONTIME_DX = now;
         }
     }
 
@@ -143,6 +143,8 @@ public class ScheduleTask {
             log.info(DateUtil.format(lastTime, "yyyy-MM-dd HH:mm:ss") + "--开始执行一般体征的记录");
             /* 110 */
             this.dataService.selectVitalSignsAfterLastTime(lastTime);
+            /* 仅在执行成功后推进水位 */
+            MyConfig.LASTEXECUTIONTIME_VITAL = now;
             /* 111 */
         } catch (Exception e) {
             /* 112 */
@@ -152,8 +154,6 @@ public class ScheduleTask {
         } finally {
             /* 115 */
             log.info("{} --结束一般体征的统计，耗时：{}秒", DateUtil.format(now, "yyyy-MM-dd HH:mm:ss"), Long.valueOf(timer.intervalSecond()));
-            /* 116 */
-            MyConfig.LASTEXECUTIONTIME_VITAL = now;
         }
     }
 

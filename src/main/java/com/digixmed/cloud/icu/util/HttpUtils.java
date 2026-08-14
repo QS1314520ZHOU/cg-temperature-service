@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -120,7 +121,9 @@ public class HttpUtils {
                 }
             }
             /* 100 */
-            connection.disconnect();
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
         /* 102 */
         return result.toString();
@@ -173,7 +176,7 @@ public class HttpUtils {
             /* 130 */
             if (param != null) {
                 /* 131 */
-                os.write(param.getBytes());
+                os.write(param.getBytes(StandardCharsets.UTF_8));
             }
             os.flush();
 
@@ -239,13 +242,13 @@ public class HttpUtils {
                 }
 
                 /* 166 */
-                result.put("code", String.valueOf(connection.getResponseCode()));
+                result.put("code", String.valueOf(responseCode));
                 /* 167 */
                 result.put("result", "请求失败");
                 /* 168 */
                 result.put("success", "false");
 
-                log.warn("HTTP_POST 请求失败: url={} responseCode={}", httpUrl, connection.getResponseCode());
+                log.warn("HTTP_POST 请求失败: url={} responseCode={}", httpUrl, responseCode);
             }
             /* 170 */
         } catch (MalformedURLException e) {
@@ -292,7 +295,9 @@ public class HttpUtils {
             }
 
             /* 198 */
-            connection.disconnect();
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
         /* 200 */
         return result;

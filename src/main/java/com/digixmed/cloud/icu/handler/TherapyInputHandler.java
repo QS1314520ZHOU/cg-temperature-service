@@ -1,6 +1,8 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -20,6 +22,8 @@ import java.util.List;
  */
 @Component
 public class TherapyInputHandler extends BaseVitalSignHandler {
+    @Autowired
+    private MongoTemplate mongoTemplate;
 
     private static final List<String> THERAPY_INPUT_CODES = Arrays.asList(
             "param_带入药量",
@@ -53,7 +57,7 @@ public class TherapyInputHandler extends BaseVitalSignHandler {
                 .unit("ml")
                 .build();
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
         return payload;
     }
 

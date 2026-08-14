@@ -26,6 +26,10 @@ vitalsign:
     max-retry-count: 3
     max-request-body-length: 4000
     max-response-body-length: 2000
+  # 体温复测巡检配置
+  recheck:
+    # 复测巡检回望窗口（小时），默认 24 小时；可用环境变量 VITALSIGN_RECHECK_LOOKBACK_HOURS 覆盖
+    lookback-hours: ${VITALSIGN_RECHECK_LOOKBACK_HOURS:24}
   patient:
     patient-id-source: ${VITALSIGN_PATIENT_ID_SOURCE:mrn}
     mrn-source: ${VITALSIGN_MRN_SOURCE:hisPid}

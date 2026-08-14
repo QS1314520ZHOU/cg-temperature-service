@@ -4,6 +4,7 @@ import com.digixmed.cloud.icu.config.VitalSignPushProperties;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.util.DataUtils;
 import com.digixmed.cloud.icu.util.HttpUtils;
+import com.digixmed.cloud.icu.util.ResponseUtils;
 import com.digixmed.cloud.icu.util.XMLUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +47,8 @@ public class PushService {
 
     private static final Logger log = LoggerFactory.getLogger(PushService.class);
 
-    private static final String COLLECTION_NAME = "thermometer_intermediate";
+    /** 新推送链路专用集合（与旧回传链路隔离） */
+    private static final String COLLECTION_NAME = IntermediateService.PUSH_COLLECTION;
 
     private static final DateTimeFormatter PLAN_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -65,6 +67,12 @@ public class PushService {
      * @return 推送结果
      */
     public PushResult push(VitalSignPayload payload, String traceId) {
+        // 准入原则：patient 集合中存在该 _id 才推送；并用 patient 文档校准
+        // patientId = patient.mrn，mrn = patient.hisPid，patientName = patient.name
+        if (!ensurePatientIdentity(payload, traceId)) {
+            return PushResult.SKIPPED;
+        }
+
         String patientIdMasked = maskPatientId(payload.getPatientId());
         log.info("STEP_08_IDEMPOTENCY_CHECKED traceId={} patient={} metric={} planTime={}",
                 traceId, patientIdMasked, payload.getVitalsignType(), payload.getPlanTime());
@@ -129,12 +137,20 @@ public class PushService {
         log.info("STEP_11_PUSH_RESPONDED traceId={} httpCode={} durationMs={}", traceId, responseCode, duration);
         log.info("STEP_11_PUSH_REQUEST_DETAIL traceId={} patient={} metric={} requestXml长度={}",
                 traceId, patientIdMasked, payload.getVitalsignType(), requestXml != null ? requestXml.length() : 0);
+        log.info("STEP_11_PUSH_REQUEST_XML traceId={} 请求报文:{}", traceId, requestXml);
         log.info("STEP_11_PUSH_RESPONSE_DETAIL traceId={} responseCode={} responseMsg={}",
                 traceId, responseCode, responseMsg != null ? responseMsg : "null");
+        log.info("STEP_11_PUSH_RESPONSE_XML traceId={} 响应报文:{}", traceId, responseMsg);
 
         // 判断结果
+        if (responseCode == null) {
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 响应缺少状态码，按可重试处理", traceId);
+            updateRecordAfterPush(idempotencyKey, false, "REQUEST_ERROR", "响应缺少状态码", requestXml, responseMsg);
+            return PushResult.RETRY;
+        }
         if ("200".equals(responseCode)) {
-            if (responseMsg != null && responseMsg.contains("成功")) {
+            // 不能用 contains("成功")：“不成功/未成功”同样包含“成功”，会把失败误判为 SUCCESS 而丢数据
+            if (ResponseUtils.isBusinessSuccess(responseMsg)) {
                 updateRecordAfterPush(idempotencyKey, true, null, null, requestXml, responseMsg);
                 log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送成功 patient={} metric={}",
                         traceId, patientIdMasked, payload.getVitalsignType());
@@ -146,7 +162,7 @@ public class PushService {
                         traceId, errorMsg, patientIdMasked, payload.getVitalsignType(), responseMsg);
                 return PushResult.DEAD;
             }
-        } else if ("4".equals(responseCode.substring(0, 1))) {
+        } else if (responseCode.startsWith("4")) {
             // 4xx错误
             updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
             log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP客户端错误: code={} patient={} metric={}",
@@ -172,6 +188,10 @@ public class PushService {
         if (success) {
             update.set("status", "SUCCESS");
             update.set("sentAt", new Date());
+            update.set("nextRetryTime", null);
+            update.set("claimedAt", null);
+            update.set("lastErrorCode", null);
+            update.set("lastErrorMessage", null);
         } else {
             // 判断是否应该重试
             boolean shouldRetry = shouldRetry(errorCode);
@@ -179,14 +199,16 @@ public class PushService {
 
             if (shouldRetry && retryCount < pushProperties.getMaxRetryCount()) {
                 update.set("status", "RETRY");
-                update.set("retryCount", retryCount + 1);
+                // 用 $inc 自增，避免“读-改-写”在多实例下丢失计数
+                update.inc("retryCount", 1);
                 // 指数退避
                 long delay = pushProperties.getRetryBaseInterval() * (1L << retryCount);
                 update.set("nextRetryTime", new Date(System.currentTimeMillis() + delay));
                 log.info("进入重试状态 retryCount={} nextDelayMs={}", retryCount + 1, delay);
             } else {
                 update.set("status", "DEAD");
-                update.set("retryCount", retryCount + 1);
+                update.inc("retryCount", 1);
+                update.set("nextRetryTime", null);
                 log.info("进入DEAD状态 retryCount={}", retryCount + 1);
             }
         }
@@ -198,10 +220,13 @@ public class PushService {
             update.set("lastErrorMessage", truncate(errorMsg, pushProperties.getMaxResponseBodyLength()));
         }
         if (requestXml != null) {
-            update.set("requestBodyMasked", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
+            update.set("requestMsg", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
+            // *_Masked 字段存脱敏后的报文，避免患者标识明文落库
+            update.set("requestBodyMasked", truncate(ResponseUtils.maskXml(requestXml), pushProperties.getMaxRequestBodyLength()));
         }
         if (responseMsg != null) {
-            update.set("responseBodyMasked", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
+            update.set("responseMsg", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
+            update.set("responseBodyMasked", truncate(ResponseUtils.maskXml(responseMsg), pushProperties.getMaxResponseBodyLength()));
         }
 
         mongoTemplate.updateFirst(
@@ -215,10 +240,8 @@ public class PushService {
     private boolean shouldRetry(String errorCode) {
         if (errorCode == null) return false;
         // 网络错误、超时、5xx可以重试
-        return errorCode.startsWith("HTTP_5") ||
-               errorCode.startsWith("HTTP_4") ||
-               "REQUEST_ERROR".equals(errorCode) ||
-               "EMPTY_REQUEST".equals(errorCode);
+        // 仅 5xx 与网络异常可自愈；4xx / 业务错误 / 空报文重发也不会成功，直接进入 DEAD（与类注释一致）
+        return errorCode.startsWith("HTTP_5") || "REQUEST_ERROR".equals(errorCode);
     }
 
     /**
@@ -251,33 +274,9 @@ public class PushService {
      * 计算Payload哈希（使用SHA-256）
      */
     private String computePayloadHash(VitalSignPayload payload) {
-        String content = String.format("%s_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s",
-                nullToEmpty(payload.getVitalsignNVal1()),
-                nullToEmpty(payload.getVitalsignNVal2()),
-                nullToEmpty(payload.getVitalsignNVal3()),
-                nullToEmpty(payload.getVitalsignSVal1()),
-                nullToEmpty(payload.getVitalsignSVal2()),
-                nullToEmpty(payload.getRecordNurseName()),
-                nullToEmpty(payload.getRecordNurseId()),
-                nullToEmpty(payload.getUnit()),
-                nullToEmpty(payload.getRemark()),
-                payload.getIsValid(),
-                payload.getPlanTime() != null ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : "");
-
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : hash) {
-                String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) hexString.append('0');
-                hexString.append(hex);
-            }
-            return hexString.toString();
-        } catch (NoSuchAlgorithmException e) {
-            log.error("SHA-256不可用，降级使用hashCode", e);
-            return String.valueOf(content.hashCode());
-        }
+        // 必须与 IntermediateService.upsertPending 写入的 payloadHash 使用同一算法，
+        // 否则同一条记录的 hash 永不相等，幂等判定恒为“内容已变”，引发状态反复重置与重复发送。
+        return IntermediateService.computeSha256(payload);
     }
 
     private String nullToEmpty(String str) {
@@ -358,9 +357,75 @@ public class PushService {
         update.set("updatedAt", new Date());
         var result = mongoTemplate.updateFirst(
                 Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)
-                        .and("status").in("PENDING", "RETRY")),
+                        // PushTask 领取时已置为 SENDING，若不放行 SENDING 则此处永远更新 0 条，推送被无声跳过
+                        .and("status").in("PENDING", "RETRY", "SENDING")),
                 update, COLLECTION_NAME);
         return result.getModifiedCount() > 0;
+    }
+
+    /**
+     * 推送前校准病人标识：
+     *   1. 按 mongoPid 回查 patient 文档，不存在直接跳过（不判断金仓状态）
+     *   2. patientId = patient.mrn，mrn = patient.hisPid，patientName = patient.name
+     *   3. patientId 仍为空时不推送，避免 HIS 回“没有相关入参病人信息”导致 DEAD 堆积
+     */
+    private boolean ensurePatientIdentity(VitalSignPayload payload, String traceId) {
+        if (payload == null) {
+            return false;
+        }
+
+        String pid = payload.getMongoPid();
+        org.bson.Document patient = findPatientByPid(pid);
+        if (patient != null) {
+            String patientId = readPatientString(patient, "mrn");
+            String mrn = readPatientString(patient, "hisPid");
+            String patientName = readPatientString(patient, "name");
+            if (patientId != null) {
+                payload.setPatientId(patientId);
+            }
+            if (mrn != null) {
+                payload.setMrn(mrn);
+            }
+            if (patientName != null) {
+                payload.setPatientName(patientName);
+            }
+        } else if (pid != null && !pid.trim().isEmpty()) {
+            log.info("STEP_09_PATIENT_CHECK traceId={} pid={} patient集合中不存在该_id，不推送", traceId, pid);
+            return false;
+        }
+
+        if (payload.getPatientId() == null || payload.getPatientId().trim().isEmpty()) {
+            log.warn("STEP_09_PATIENT_CHECK traceId={} pid={} patientId(patient.mrn)为空，不推送", traceId, pid);
+            return false;
+        }
+        if (payload.getMrn() == null || payload.getMrn().trim().isEmpty()) {
+            log.warn("STEP_09_PATIENT_CHECK traceId={} pid={} mrn(patient.hisPid)为空", traceId, pid);
+        }
+        return true;
+    }
+
+    /** 按 Mongo pid 查 patient 文档；pid 为空/非法或异常时返回 null */
+    private org.bson.Document findPatientByPid(String pid) {
+        if (pid == null || pid.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            Query query = Query.query(Criteria.where("_id").is(new org.bson.types.ObjectId(pid.trim())));
+            return mongoTemplate.findOne(query, org.bson.Document.class, "patient");
+        } catch (Exception e) {
+            log.warn("STEP_09_PATIENT_CHECK pid={} 查询patient异常: {}", pid, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 读取 patient 字符串字段（空串视为 null） */
+    private String readPatientString(org.bson.Document patient, String key) {
+        Object value = patient.get(key);
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
     }
 
     /**
@@ -369,17 +434,23 @@ public class PushService {
     private String buildDataXml(VitalSignPayload payload) {
         com.digixmed.cloud.icu.pojo.DataValue dataValue = new com.digixmed.cloud.icu.pojo.DataValue();
         dataValue.setIsValid(payload.getIsValid());
-        dataValue.setMrn(payload.getMrn());
-        dataValue.setPatientId(payload.getPatientId());
-        dataValue.setPatientName(payload.getPatientName());
+        // mrn = patient.hisPid，patientId = patient.mrn，patientName = patient.name；
+        // null 会使 JAXB 省略整个节点，因此空值统一输出空串
+        dataValue.setMrn(payload.getMrn() != null ? payload.getMrn() : "");
+        dataValue.setPatientId(payload.getPatientId() != null ? payload.getPatientId() : "");
+        dataValue.setPatientName(payload.getPatientName() != null ? payload.getPatientName() : "");
         if (payload.getPlanTime() != null) {
             dataValue.setPlanTime(Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
         }
         if (payload.getRecordTime() != null) {
             dataValue.setRecordTime(Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
         }
-        dataValue.setRecordNurseId(payload.getRecordNurseId());
-        dataValue.setRecordNurseName(payload.getRecordNurseName());
+        // recordNurseId 为空时默认 "dba"
+        String nurseId = payload.getRecordNurseId();
+        dataValue.setRecordNurseId((nurseId != null && !nurseId.isEmpty()) ? nurseId : "dba");
+        // recordNurseName 为空时默认 "系统管理员"
+        String nurseName = payload.getRecordNurseName();
+        dataValue.setRecordNurseName((nurseName != null && !nurseName.isEmpty()) ? nurseName : "系统管理员");
         dataValue.setSeries(payload.getSeries());
         dataValue.setUnit(payload.getUnit());
         dataValue.setWardCode(payload.getWardCode());
@@ -405,12 +476,8 @@ public class PushService {
      */
     private String extractErrorMsg(String responseMsg) {
         if (responseMsg == null) return "未知错误";
-        int start = responseMsg.indexOf("<msg>");
-        int end = responseMsg.indexOf("</msg>");
-        if (start >= 0 && end > start) {
-            return responseMsg.substring(start + 5, end);
-        }
-        return responseMsg;
+        String msg = ResponseUtils.extractMsgNode(responseMsg);
+        return msg != null ? msg : responseMsg;
     }
 
     /**

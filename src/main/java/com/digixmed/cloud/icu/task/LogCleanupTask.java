@@ -1,5 +1,6 @@
 package com.digixmed.cloud.icu.task;
 
+import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +19,7 @@ import java.util.Date;
  * 历史日志清理任务
  *
  * 业务目的：清理超过指定天数的历史中间表记录
- * 输入：thermometer_intermediate集合
+ * 输入：vitalsign_push_queue集合（新推送链路专用）
  * 输出：删除过期记录
  * 调度时间：每日00:00
  * 默认保留天数：180天
@@ -28,7 +29,7 @@ public class LogCleanupTask {
 
     private static final Logger log = LoggerFactory.getLogger(LogCleanupTask.class);
 
-    private static final String COLLECTION_NAME = "thermometer_intermediate";
+    private static final String COLLECTION_NAME = IntermediateService.PUSH_COLLECTION;
 
     @Autowired
     private MongoTemplate mongoTemplate;

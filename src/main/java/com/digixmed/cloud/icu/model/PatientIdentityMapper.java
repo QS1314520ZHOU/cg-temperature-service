@@ -1,6 +1,8 @@
 package com.digixmed.cloud.icu.model;
 
 import lombok.Data;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +22,8 @@ import org.springframework.stereotype.Component;
 @Data
 @Component
 public class PatientIdentityMapper {
+
+    private static final Logger log = LoggerFactory.getLogger(PatientIdentityMapper.class);
 
     /**
      * SOAP patientId的数据来源
@@ -69,15 +73,13 @@ public class PatientIdentityMapper {
             return null;
         }
 
-        String value;
-        if ("mrn".equals(patientIdSource)) {
-            value = patient.getString("mrn");
-        } else {
-            value = patient.getString("hisPid");
-        }
+        // 按需求固定：SOAP patientId = patient.mrn（配置项保留，默认 mrn），不再降级到 hisPid，防止与 mrn 字段互换
+        String value = "hisPid".equals(patientIdSource)
+                ? readString(patient, "hisPid")
+                : readString(patient, "mrn");
 
-        if (value == null || value.isEmpty()) {
-            value = patient.getString("hisPid"); // 降级到hisPid
+        if (value == null) {
+            log.warn("patient缺少{}字段，patientId为空，_id={}", patientIdSource, patient.get("_id"));
         }
 
         return value;
@@ -94,15 +96,12 @@ public class PatientIdentityMapper {
             return null;
         }
 
-        String value;
-        if ("hisPid".equals(mrnSource)) {
-            value = patient.getString("hisPid");
-        } else {
-            value = patient.getString("mrn");
-        }
+        String value = "mrn".equals(mrnSource)
+                ? readString(patient, "mrn")
+                : readString(patient, "hisPid");
 
-        if (value == null || value.isEmpty()) {
-            value = patient.getString("mrn"); // 降级到mrn
+        if (value == null) {
+            log.warn("patient缺少{}字段，mrn为空，_id={}", mrnSource, patient.get("_id"));
         }
 
         return value;
@@ -118,7 +117,23 @@ public class PatientIdentityMapper {
         if (patient == null) {
             return null;
         }
-        return patient.getString("name");
+        String name = readString(patient, "name");
+        if (name == null) {
+            log.warn("patient缺少name字段，patientName为空，_id={}", patient.get("_id"));
+        }
+        return name;
+    }
+
+    /**
+     * 读取字符串字段（兼容非字符串存储，空串视为 null）
+     */
+    private String readString(org.bson.Document patient, String key) {
+        Object value = patient.get(key);
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
     }
 
     /**

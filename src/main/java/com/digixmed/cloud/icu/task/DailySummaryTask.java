@@ -13,6 +13,7 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -55,7 +56,9 @@ public class DailySummaryTask {
 
     private static final Logger log = LoggerFactory.getLogger(DailySummaryTask.class);
 
-    private static final String WARD_CODE = "125011";
+    /** 病区编码，与 VitalSignScanTask 统一使用同一配置项 */
+    @Value("${vitalsign.patient.ward-code:125011}")
+    private String wardCode;
 
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
@@ -118,11 +121,17 @@ public class DailySummaryTask {
             ClinicalTimeWindow window = timeWindowService.buildDailyWindow(today);
             log.info("STEP_02_WINDOW_CREATED traceId={} 统计窗口={}", traceId, window);
 
-            List<InpatientDTO> inpatients = inpatientRepository.findInpatients(WARD_CODE);
-            log.info("STEP_01_PATIENT_SELECTED traceId={} 在科患者数量={}", traceId, inpatients.size());
+            // 准入原则：不再查金仓在科患者列表，只看 bedside 是否有数据 + patient 集合中是否存在该 _id
+            List<String> pids = findCandidatePids(window, traceId);
+            log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, pids.size());
 
-            for (InpatientDTO inpatient : inpatients) {
-                processPatientSummary(inpatient, window, today, traceId);
+            for (String pid : pids) {
+                Document patient = findMongoPatientByPid(pid);
+                if (patient == null) {
+                    log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
+                    continue;
+                }
+                processPatientSummary(pid, patient, window, today, traceId);
             }
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总完成", traceId);
@@ -131,22 +140,13 @@ public class DailySummaryTask {
         }
     }
 
-    private void processPatientSummary(InpatientDTO inpatient, ClinicalTimeWindow window,
+    private void processPatientSummary(String pid, Document patient, ClinicalTimeWindow window,
                                         LocalDate today, String parentTraceId) {
-        String patientTraceId = TraceIdGenerator.generateWithPatient(inpatient.getPatientId());
-        String patientIdMasked = maskPatientId(inpatient.getPatientId());
+        String hisPatientId = getValueFromDocByKey(patient, "mrn", String.class);
+        String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
+        String patientIdMasked = maskPatientId(hisPatientId);
 
         try {
-            Document patient = findMongoPatient(inpatient.getPatientId());
-            if (patient == null) {
-                return;
-            }
-
-            String pid = getMongoPid(patient);
-            if (pid == null) {
-                return;
-            }
-
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
@@ -183,7 +183,7 @@ public class DailySummaryTask {
             processNetUltrafiltration(records, patient, pid, window, patientTraceId);
 
             // 身高体重（检查是否需要发送）
-            if (heightWeightHandler.shouldSendHeightWeight(inpatient.getPatientId(), today)) {
+            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, today)) {
                 LocalDateTime sendTime = window.getReportDate();
                 VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, sendTime, patientTraceId);
                 if (heightPayload != null) {
@@ -522,6 +522,45 @@ public class DailySummaryTask {
             log.error("STEP_05_VALUE_PARSED traceId={} 获取动态出量配置失败 pid={}", traceId, pid, e);
         }
         return Collections.emptyList();
+    }
+
+    /**
+     * 本轮候选患者：统计窗口内有 bedside 数据的 pid（去重）。
+     * 不依赖金仓在科列表，是否回传只看 patient 集合中是否存在该 _id。
+     */
+    private List<String> findCandidatePids(ClinicalTimeWindow window, String traceId) {
+        try {
+            Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
+            Query query = new Query(Criteria.where("time").gte(startDate).lt(endDate));
+            query.fields().include("pid");
+            List<Document> docs = mongoTemplate.find(query, Document.class, "bedside");
+
+            List<String> pids = docs.stream()
+                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
+                    .filter(one -> one != null && !one.isEmpty())
+                    .distinct()
+                    .collect(Collectors.toList());
+
+            log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) bedside命中pid数量={}",
+                    traceId, window.getStart(), window.getEnd(), pids.size());
+            return pids;
+        } catch (Exception e) {
+            log.error("STEP_01_PATIENT_SELECTED traceId={} 查询候选患者异常", traceId, e);
+            return Collections.emptyList();
+        }
+    }
+
+    /** 通过 pid 查询 MongoDB patient 文档；pid 非法或不存在返回 null */
+    private Document findMongoPatientByPid(String pid) {
+        try {
+            Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(pid)));
+            return mongoTemplate.findOne(query, Document.class, "patient");
+        } catch (Exception e) {
+            log.warn("findMongoPatientByPid pid={} 查询异常: {}", pid, e.getMessage());
+            return null;
+        }
     }
 
     private Document findMongoPatient(String patientId) {

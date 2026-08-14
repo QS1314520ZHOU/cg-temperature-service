@@ -1,6 +1,8 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -20,6 +22,8 @@ import java.util.List;
  */
 @Component
 public class StoolCountHandler extends BaseVitalSignHandler {
+    @Autowired
+    private MongoTemplate mongoTemplate;
 
     /**
      * 大便次数代码别名，按优先级排列
@@ -60,7 +64,7 @@ public class StoolCountHandler extends BaseVitalSignHandler {
                 .unit("次")
                 .build();
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
         return payload;
     }
 

@@ -117,7 +117,7 @@ public class BreathHandler extends BaseVitalSignHandler {
                     .build();
         }
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
         return payload;
     }
 

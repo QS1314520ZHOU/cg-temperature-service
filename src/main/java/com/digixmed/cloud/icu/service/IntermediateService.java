@@ -1,7 +1,6 @@
 package com.digixmed.cloud.icu.service;
 
 import com.digixmed.cloud.icu.model.VitalSignPayload;
-import lombok.AllArgsConstructor;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
@@ -22,7 +21,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Intermediate table service (thermometer_intermediate)
+ * Intermediate table service (vitalsign_push_queue)
+ * 新推送链路专用集合，与旧回传链路（thermometer_intermediate）完全隔离
  *
  * Decouples collection tasks from push tasks via a state-machine-backed queue.
  *
@@ -34,11 +34,20 @@ import java.util.Map;
  * Idempotency key: patientId_series_vitalsignType_planTime
  */
 @Service
-@AllArgsConstructor
 public class IntermediateService {
 
-    private static final String COLLECTION = "thermometer_intermediate";
+    /**
+     * 新推送链路（VitalSignScanTask -> PushTask -> PushService）专用集合。
+     * 旧回传链路（HandleService/ReturnService/IntermediateTable）仍使用 thermometer_intermediate，
+     * 两边文档结构不同，必须分开存储，否则会互相领取对方的记录并发出残缺报文。
+     */
+    public static final String PUSH_COLLECTION = "vitalsign_push_queue";
+
+    private static final String COLLECTION = PUSH_COLLECTION;
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    /** 统一时区：统一使用本常量，不得使用 JVM 默认时区，否则 planTime 会随部署环境漂移并破坏幂等键 */
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -58,6 +67,14 @@ public class IntermediateService {
      * @return map with result info (idempotencyKey, status, action, id, etc.)
      */
     public Map<String, Object> upsertPending(VitalSignPayload payload, String traceId) {
+        // 准入原则：patientId（= patient.mrn）为空的记录不入队、不回传
+        if (payload == null || payload.getPatientId() == null || payload.getPatientId().trim().isEmpty()) {
+            Map<String, Object> skipped = new HashMap<>();
+            skipped.put("action", "SKIP");
+            skipped.put("status", "SKIPPED_NO_PATIENT_ID");
+            return skipped;
+        }
+
         String planTimeStr = payload.getPlanTime() != null
                 ? payload.getPlanTime().format(FORMATTER) : "";
         String idempotencyKey = String.format("%s_%s_%s_%s",
@@ -76,7 +93,7 @@ public class IntermediateService {
         result.put("idempotencyKey", idempotencyKey);
         result.put("payloadHash", payloadHash);
 
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
 
         if (existing != null) {
             String existingHash = existing.getString("payloadHash");
@@ -135,7 +152,7 @@ public class IntermediateService {
      * @return the claimed document, or null if no eligible record exists
      */
     public Document claimNext() {
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
 
         Query query = new Query(
                 Criteria.where("status").in("PENDING", "RETRY")
@@ -147,7 +164,8 @@ public class IntermediateService {
 
         Update update = new Update()
                 .set("status", "SENDING")
-                .set("claimedAt", now);
+                .set("claimedAt", now)
+                .set("updatedAt", now);
 
         FindAndModifyOptions options = FindAndModifyOptions.options()
                 .returnNew(true)
@@ -162,7 +180,7 @@ public class IntermediateService {
      * @param idempotencyKey the idempotency key of the record
      */
     public void markSuccess(String idempotencyKey) {
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
 
         Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
         Update update = new Update()
@@ -186,14 +204,15 @@ public class IntermediateService {
      */
     public void markRetry(String idempotencyKey, String errorCode, String errorMessage,
                           int retryCount, long delayMs) {
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
         Date nextRetryTime = new Date(now.getTime() + delayMs);
 
         Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
         Update update = new Update()
                 .set("status", "RETRY")
                 .set("nextRetryTime", nextRetryTime)
-                .set("retryCount", retryCount + 1)
+                // 用 $inc 自增，避免“读-改-写”在多实例并发下丢失重试计数
+                .inc("retryCount", 1)
                 .set("lastErrorCode", errorCode)
                 .set("lastErrorMessage", errorMessage)
                 .set("claimedAt", null)
@@ -211,7 +230,7 @@ public class IntermediateService {
      * @param errorMessage   final error message
      */
     public void markDead(String idempotencyKey, String errorCode, String errorMessage) {
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
 
         Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
         Update update = new Update()
@@ -235,7 +254,7 @@ public class IntermediateService {
      * @return count of recovered records
      */
     public int recoverStaleSending(long sendingTimeoutMs) {
-        Date now = Date.from(LocalDateTime.now().atZone(ZoneId.systemDefault()).toInstant());
+        Date now = new Date();
         Date threshold = new Date(now.getTime() - sendingTimeoutMs);
 
         Query query = new Query(
@@ -263,8 +282,13 @@ public class IntermediateService {
      * Uses all payload fields to produce a 64-character hex string.
      * Throws RuntimeException if SHA-256 algorithm is unavailable (never falls back to hashCode).
      */
-    String computeSha256(VitalSignPayload payload) {
-        String raw = String.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+    /**
+     * 计算 payloadHash。
+     * 不得包含 traceId / className 等每次变化的字段，否则幂等比较永远判定“内容已变”。
+     * PushService 必须复用本方法，两处算法必须保持一致。
+     */
+    public static String computeSha256(VitalSignPayload payload) {
+        String raw = String.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
                 nvl(payload.getPatientId()),
                 nvl(payload.getMrn()),
                 nvl(payload.getPatientName()),
@@ -284,9 +308,7 @@ public class IntermediateService {
                 nvl(payload.getRecordNurseName()),
                 nvl(payload.getMongoPid()),
                 payload.getPlanTime() != null ? payload.getPlanTime().format(FORMATTER) : "",
-                payload.getRecordTime() != null ? payload.getRecordTime().format(FORMATTER) : "",
-                nvl(payload.getTraceId()),
-                payload.getClass().getName()
+                payload.getRecordTime() != null ? payload.getRecordTime().format(FORMATTER) : ""
         );
 
         try {
@@ -298,7 +320,7 @@ public class IntermediateService {
         }
     }
 
-    private String bytesToHex(byte[] bytes) {
+    private static String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(64);
         for (byte b : bytes) {
             sb.append(String.format("%02x", b));
@@ -306,7 +328,7 @@ public class IntermediateService {
         return sb.toString();
     }
 
-    private String nvl(String s) {
+    private static String nvl(String s) {
         return s == null ? "" : s;
     }
 
@@ -347,11 +369,11 @@ public class IntermediateService {
 
         if (payload.getPlanTime() != null) {
             update.set("planTime", Date.from(
-                    payload.getPlanTime().atZone(ZoneId.systemDefault()).toInstant()));
+                    payload.getPlanTime().atZone(ZONE).toInstant()));
         }
         if (payload.getRecordTime() != null) {
             update.set("recordTime", Date.from(
-                    payload.getRecordTime().atZone(ZoneId.systemDefault()).toInstant()));
+                    payload.getRecordTime().atZone(ZONE).toInstant()));
         }
     }
 
@@ -380,11 +402,11 @@ public class IntermediateService {
 
         if (payload.getPlanTime() != null) {
             doc.append("planTime", Date.from(
-                    payload.getPlanTime().atZone(ZoneId.systemDefault()).toInstant()));
+                    payload.getPlanTime().atZone(ZONE).toInstant()));
         }
         if (payload.getRecordTime() != null) {
             doc.append("recordTime", Date.from(
-                    payload.getRecordTime().atZone(ZoneId.systemDefault()).toInstant()));
+                    payload.getRecordTime().atZone(ZONE).toInstant()));
         }
     }
 }

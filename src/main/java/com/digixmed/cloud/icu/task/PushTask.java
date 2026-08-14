@@ -1,6 +1,7 @@
 package com.digixmed.cloud.icu.task;
 
 import com.digixmed.cloud.icu.model.VitalSignPayload;
+import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.service.PushService;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import org.slf4j.Logger;
@@ -21,7 +22,7 @@ import java.util.List;
  * 推送任务
  *
  * 业务目的：扫描PENDING和RETRY状态的记录并推送
- * 输入：thermometer_intermediate集合
+ * 输入：vitalsign_push_queue集合（新推送链路专用，不会领取旧回传链路的记录）
  * 输出：推送结果（SUCCESS/RETRY/DEAD）
  * 调度时间：每2分钟执行一次
  *
@@ -36,13 +37,22 @@ public class PushTask {
 
     private static final Logger log = LoggerFactory.getLogger(PushTask.class);
 
-    private static final String COLLECTION_NAME = "thermometer_intermediate";
+    private static final String COLLECTION_NAME = IntermediateService.PUSH_COLLECTION;
+
+    /** 单轮最多处理的记录数，避免积压时 2 分钟只发 1 条 */
+    private static final int MAX_BATCH_PER_ROUND = 50;
+
+    /** SENDING 超时阈值：超过该时长仍未完成的记录视为卡死，恢复为 RETRY */
+    private static final long SENDING_TIMEOUT_MS = 10 * 60 * 1000L;
 
     @Autowired
     private MongoTemplate mongoTemplate;
 
     @Autowired
     private PushService pushService;
+
+    @Autowired
+    private IntermediateService intermediateService;
 
     /**
      * 执行推送
@@ -53,72 +63,65 @@ public class PushTask {
         log.info("STEP_10_PUSH_STARTED traceId={} 开始推送任务", traceId);
 
         try {
-            // 使用原子操作领取记录
-            Document record = claimNextRecord(traceId);
-            if (record == null) {
-                log.info("STEP_10_PUSH_STARTED traceId={} 无待推送记录", traceId);
-                return;
+            // 恢复SENDING卡死记录（进程在发送期间重启会导致记录永久停留在SENDING）
+            int recovered = intermediateService.recoverStaleSending(SENDING_TIMEOUT_MS);
+            if (recovered > 0) {
+                log.warn("STEP_10_PUSH_STARTED traceId={} 恢复SENDING超时记录 count={}", traceId, recovered);
             }
 
             int successCount = 0;
             int retryCount = 0;
             int deadCount = 0;
             int skippedCount = 0;
+            int handled = 0;
 
-            // 处理领取的记录
-            try {
-                VitalSignPayload payload = convertToPayload(record);
-                if (payload == null) {
-                    skippedCount++;
-                    updateRecordStatus(record, "DEAD", "PAYLOAD_RESTORE_FAILED", "无法恢复Payload");
-                } else {
-                    PushService.PushResult result = pushService.push(payload, traceId);
-                    switch (result) {
-                        case SUCCESS:
-                            successCount++;
-                            break;
-                        case RETRY:
-                            retryCount++;
-                            break;
-                        case DEAD:
-                            deadCount++;
-                            break;
-                        case SKIPPED:
-                            skippedCount++;
-                            break;
-                    }
+            // 统一走 IntermediateService.claimNext（含 nextRetryTime 退避过滤与 createdAt 排序），并改为单轮批量处理
+            for (int i = 0; i < MAX_BATCH_PER_ROUND; i++) {
+                Document record = intermediateService.claimNext();
+                if (record == null) {
+                    break;
                 }
-            } catch (Exception e) {
-                log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送单条记录异常", traceId, e);
-                deadCount++;
-                updateRecordStatus(record, "DEAD", "PUSH_ERROR", e.getMessage());
+                handled++;
+                try {
+                    VitalSignPayload payload = convertToPayload(record);
+                    if (payload == null) {
+                        skippedCount++;
+                        updateRecordStatus(record, "DEAD", "PAYLOAD_RESTORE_FAILED", "无法恢复Payload");
+                    } else {
+                        PushService.PushResult result = pushService.push(payload, traceId);
+                        switch (result) {
+                            case SUCCESS:
+                                successCount++;
+                                break;
+                            case RETRY:
+                                retryCount++;
+                                break;
+                            case DEAD:
+                                deadCount++;
+                                break;
+                            case SKIPPED:
+                                skippedCount++;
+                                break;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送单条记录异常", traceId, e);
+                    deadCount++;
+                    updateRecordStatus(record, "DEAD", "PUSH_ERROR", e.getMessage());
+                }
             }
 
-            log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送完成: success={} retry={} dead={} skipped={}",
-                    traceId, successCount, retryCount, deadCount, skippedCount);
+            if (handled == 0) {
+                log.info("STEP_10_PUSH_STARTED traceId={} 无待推送记录", traceId);
+                return;
+            }
+
+            log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送完成: handled={} success={} retry={} dead={} skipped={}",
+                    traceId, handled, successCount, retryCount, deadCount, skippedCount);
 
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送任务异常", traceId, e);
         }
-    }
-
-    /**
-     * 原子领取下一条待推送记录
-     */
-    private Document claimNextRecord(String traceId) {
-        // 查询PENDING或RETRY且nextRetryTime已到的记录
-        Query query = new Query(Criteria.where("status").in("PENDING", "RETRY"))
-                .limit(1);
-
-        // 原子更新为SENDING
-        Update update = new Update();
-        update.set("status", "SENDING");
-        update.set("claimedAt", new Date());
-        update.set("updatedAt", new Date());
-
-        return mongoTemplate.findAndModify(query, update,
-                org.springframework.data.mongodb.core.FindAndModifyOptions.options().returnNew(true),
-                Document.class, COLLECTION_NAME);
     }
 
     /**

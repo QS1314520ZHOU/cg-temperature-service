@@ -26,11 +26,10 @@ import java.util.List;
  * 复测逻辑：
  *   1. 若标准时间点体温数值 < 38.5 → vitalsignNVal2 = 空
  *   2. 若标准时间点体温 >= 38.5
- *      a. 查询 [标准时间点, 标准时间点+1小时) 内同一患者有效的param_T
- *      b. 排除作为首条值使用的原始记录
- *      c. 按bedside.time升序排列
- *      d. 取原记录之后最早的一条有效复测值
- *      e. 复测不存在则 vitalsignNVal2 = 空
+ *      a. vitalsignSVal1 = 原始体温值
+ *      b. 查询 (标准时间点, 标准时间点+1小时] 内同一患者有效的param_T
+ *      c. 如果复测值 >= 38.5 → vitalsignNVal2 = 复测值
+ *      d. 如果复测值 < 38.5 或不存在 → vitalsignNVal2 = 空
  *
  * 如果标准点记录存在多条：
  *   - 优先valid=true
@@ -85,17 +84,34 @@ public class TemperatureHandler extends BaseVitalSignHandler {
                 .vitalsignName("体温")
                 .vitalsignType("1001")
                 .vitalsignNVal1(formatDouble(tempValue))
-                .vitalsignSVal1(location)
+                .vitalsignSVal1(location != null ? location : "")
                 .unit("℃")
                 .build();
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
+
+        // 默认传空字符串，保证报文中始终存在<vitalsignNVal2>节点
+        payload.setVitalsignNVal2("");
 
         // 复测逻辑：体温 >= 38.5℃
         if (tempValue >= RECHECK_THRESHOLD) {
-            String recheckValue = findRecheckValue(pid, planTime, bedsideId, traceId);
-            payload.setVitalsignNVal2(recheckValue);
-            log.info("STEP_06_RECHECK traceId={} recheckValue={}", traceId, recheckValue);
+            // vitalsignSVal1 始终为体温部位（param_tiWenBuWei.strVal），不再覆盖为体温值
+            // 查询复测值
+            // 复测窗口以体征记录的 bedside.time 为基准（而非标准时间点）
+            LocalDateTime recheckBase = payload.getPlanTime() != null ? payload.getPlanTime() : planTime;
+            String recheckValue = findRecheckValue(pid, recheckBase, bedsideId, traceId);
+            // vitalsignNVal2 = 复测值（如果仍 >= 38.5）
+            if (recheckValue != null) {
+                Double recheckNum = parseDouble(recheckValue);
+                if (recheckNum != null && recheckNum >= RECHECK_THRESHOLD) {
+                    payload.setVitalsignNVal2(recheckValue);
+                } else {
+                    payload.setVitalsignNVal2("");
+                }
+            } else {
+                payload.setVitalsignNVal2("");
+            }
+            log.info("STEP_06_RECHECK traceId={} 原始值={} 复测值={}", traceId, formatDouble(tempValue), recheckValue);
         }
 
         return payload;
@@ -112,7 +128,7 @@ public class TemperatureHandler extends BaseVitalSignHandler {
 
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(LOCATION_CODE)
-                .and("valid").is(true)
+                .and("valid").ne(false)
                 .and("time").gte(startTime).lt(endTime)
         ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
                 .limit(1);
@@ -128,6 +144,7 @@ public class TemperatureHandler extends BaseVitalSignHandler {
 
     /**
      * 查找复测体温值
+     * 查询 (标准时间点, 标准时间点+1小时] 内的复测记录
      *
      * @param pid 患者MongoDB ID
      * @param planTime 标准时间点
@@ -136,15 +153,16 @@ public class TemperatureHandler extends BaseVitalSignHandler {
      * @return 复测值字符串，未找到返回null
      */
     private String findRecheckValue(String pid, LocalDateTime planTime, String originalBedsideId, String traceId) {
-        ClinicalTimeWindow recheckWindow = timeWindowService.buildTemperatureRecheckWindow(planTime);
-        Date start = Date.from(recheckWindow.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date end = Date.from(recheckWindow.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        // 复测窗口：(标准时间点, 标准时间点+1小时]
+        // 排除标准时间点本身，查询之后1小时内的记录
+        Date start = Date.from(planTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date end = Date.from(planTime.plusHours(1).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-        // 查询窗口内的有效param_T记录
+        // 查询窗口内的有效param_T记录（排除标准时间点本身）
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(SOURCE_CODE)
-                .and("valid").is(true)
-                .and("time").gte(start).lt(end)
+                .and("valid").ne(false)
+                .and("time").gt(start).lte(end)
         ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "time"));
 
         List<Document> records = mongoTemplate.find(query, Document.class, "bedside");

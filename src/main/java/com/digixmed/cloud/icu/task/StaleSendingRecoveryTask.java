@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
  * SENDING超时恢复任务
  *
  * 业务目的：恢复卡死在SENDING状态的记录
- * 输入：thermometer_intermediate集合中status=SENDING且超时的记录
+ * 输入：vitalsign_push_queue集合中status=SENDING且超时的记录
  * 输出：恢复为RETRY状态，nextRetryTime=now
  * 调度时间：每5分钟执行一次
  *

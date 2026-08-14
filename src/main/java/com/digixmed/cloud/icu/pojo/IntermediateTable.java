@@ -108,6 +108,12 @@ public class IntermediateTable {
     @ApiModelProperty(value = "体征值", dataType = "String", name = "signValue")
     private String signValue;
 
+    @ApiModelProperty(value = "复测体征值（体温复测）", dataType = "String", name = "signValue2")
+    private String signValue2;
+
+    @ApiModelProperty(value = "体温部位（param_tiWenBuWei.strVal）", dataType = "String", name = "signLocation")
+    private String signLocation;
+
     @ApiModelProperty(value = "体征值单位", dataType = "String", name = "signUnit")
     private String signUnit;
 
@@ -182,6 +188,14 @@ public class IntermediateTable {
 
     @ApiModelProperty(value = "最后编辑时间", dataType = "Date", name = "lastEditTime")
     private Date lastEditTime;
+
+    /** 体温复测已查询次数：每 10 分钟 1 次，最多 6 次 */
+    @ApiModelProperty(value = "体温复测查询次数", dataType = "Integer", name = "recheckAttempts")
+    private Integer recheckAttempts = Integer.valueOf(0);
+
+    /** 体温复测是否已结束：1=不再巡检（0/null=需继续巡检） */
+    @ApiModelProperty(value = "体温复测是否结束", dataType = "Integer", name = "recheckDone")
+    private Integer recheckDone;
 
     // 兼容旧字段名
     public void setLastEditTime(Date lastEditTime) {

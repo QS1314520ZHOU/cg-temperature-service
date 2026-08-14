@@ -1,6 +1,8 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -16,6 +18,9 @@ import java.time.LocalDateTime;
  */
 @Component
 public class UrineOutputHandler extends BaseVitalSignHandler {
+
+    @Autowired
+    private MongoTemplate mongoTemplate;
 
     private static final String SOURCE_CODE = "param_niaoLiang";
 
@@ -49,7 +54,7 @@ public class UrineOutputHandler extends BaseVitalSignHandler {
                 .unit("ml")
                 .build();
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
         return payload;
     }
 }

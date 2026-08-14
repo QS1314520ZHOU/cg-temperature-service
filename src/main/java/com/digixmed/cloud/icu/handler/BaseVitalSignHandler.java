@@ -4,10 +4,16 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Date;
 
 /**
  * 体征处理器抽象基类
@@ -23,6 +29,8 @@ import java.time.LocalDateTime;
  *   - isValid = 1
  *   - wardCode = "125011"
  *   - recordNurseId = "dba"
+ *   - planTime = bedside.time
+ *   - recordTime = bedside.time
  */
 public abstract class BaseVitalSignHandler {
 
@@ -50,7 +58,42 @@ public abstract class BaseVitalSignHandler {
      *
      * @param payload 推送载荷
      * @param patient MongoDB patient文档
-     * @param planTime 标准时间点
+     * @param bedside MongoDB bedside记录（用于获取time字段）
+     * @param mongoTemplate MongoDB模板（用于查询account）
+     * @param traceId 追踪ID
+     */
+    protected void fillCommonFields(VitalSignPayload payload, Document patient, Document bedside,
+                                     MongoTemplate mongoTemplate, String traceId) {
+        payload.setPatientId(patientIdentityMapper.getPatientId(patient));
+        payload.setMrn(patientIdentityMapper.getMrn(patient));
+        payload.setPatientName(patientIdentityMapper.getPatientName(patient));
+        payload.setSeries(patientIdentityMapper.getSeries());
+        payload.setWardCode(patientIdentityMapper.getWardCode());
+        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+
+        // 获取记录护士姓名
+        String pid = getValueFromDocByKey(patient, "_id", String.class);
+        String nurseName = getRecordNurseName(pid, bedside, mongoTemplate, traceId);
+        payload.setRecordNurseName(nurseName != null ? nurseName : "系统管理员");
+
+        // planTime 和 recordTime 都使用 bedside.time
+        LocalDateTime bedsideTime = getBedsideTime(bedside);
+        payload.setPlanTime(bedsideTime);
+        payload.setRecordTime(bedsideTime);
+
+        payload.setRemark("");
+        payload.setIsValid(1);
+        payload.setTraceId(traceId);
+        payload.setMongoPid(pid);
+    }
+
+    /**
+     * 填充公共字段（使用指定的 planTime）
+     * 用于没有 bedside 记录的场景（如身高体重）
+     *
+     * @param payload 推送载荷
+     * @param patient MongoDB patient文档
+     * @param planTime 指定的时间
      * @param traceId 追踪ID
      */
     protected void fillCommonFields(VitalSignPayload payload, Document patient, LocalDateTime planTime, String traceId) {
@@ -66,6 +109,85 @@ public abstract class BaseVitalSignHandler {
         payload.setIsValid(1);
         payload.setTraceId(traceId);
         payload.setMongoPid(getValueFromDocByKey(patient, "_id", String.class));
+    }
+
+    /**
+     * 从 bedside 文档获取 time 字段并转换为 LocalDateTime
+     *
+     * @param bedside MongoDB bedside记录
+     * @return bedside.time 的 LocalDateTime 表示
+     */
+    protected LocalDateTime getBedsideTime(Document bedside) {
+        Date time = getValueFromDocByKey(bedside, "time", Date.class);
+        if (time != null) {
+            return time.toInstant().atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+        }
+        return null;
+    }
+
+    /**
+     * 获取记录护士姓名
+     * 优先从 param_Yishi 的 editUser 获取，如果没有则从当前记录的 editUser 获取
+     *
+     * @param pid 患者MongoDB ID
+     * @param bedside 当前bedside记录
+     * @param mongoTemplate MongoDB模板
+     * @param traceId 追踪ID
+     * @return 护士真实姓名
+     */
+    /** 读取 editUser（兼容 String 与 ObjectId 两种存储形式） */
+    protected String readEditUserValue(Document doc) {
+        if (doc == null) {
+            return null;
+        }
+        Object editUser = doc.get("editUser");
+        if (editUser == null) {
+            return null;
+        }
+        String value = editUser.toString().trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    protected String getRecordNurseName(String pid, Document bedside, MongoTemplate mongoTemplate, String traceId) {
+        String editUser = null;
+
+        // 1. 优先查询 param_Yishi 的 editUser
+        Date bedsideTime = getValueFromDocByKey(bedside, "time", Date.class);
+        if (bedsideTime != null && pid != null) {
+            Query yishiQuery = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false)
+                    .and("time").is(bedsideTime));
+            Document yishiDoc = mongoTemplate.findOne(yishiQuery, Document.class, "bedside");
+            if (yishiDoc != null) {
+                editUser = readEditUserValue(yishiDoc);
+                log.info("STEP_07_NURSE traceId={} 从param_Yishi获取editUser={}", traceId, editUser);
+            }
+        }
+
+        // 2. 如果没有 param_Yishi，从当前记录获取 editUser
+        if (editUser == null || editUser.isEmpty()) {
+            editUser = readEditUserValue(bedside);
+            log.info("STEP_07_NURSE traceId={} 从当前记录获取editUser={}", traceId, editUser);
+        }
+
+        // 3. 根据 editUser 查询 account.trueName
+        if (editUser != null && !editUser.isEmpty()) {
+            try {
+                ObjectId accountId = new ObjectId(editUser);
+                Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+                Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                if (account != null) {
+                    String trueName = getValueFromDocByKey(account, "trueName", String.class);
+                    log.info("STEP_07_NURSE traceId={} 查询到account trueName={}", traceId, trueName);
+                    return trueName;
+                }
+            } catch (Exception e) {
+                log.warn("STEP_07_NURSE traceId={} 查询account失败 editUser={}: {}", traceId, editUser, e.getMessage());
+            }
+        }
+
+        return null;
     }
 
     /**

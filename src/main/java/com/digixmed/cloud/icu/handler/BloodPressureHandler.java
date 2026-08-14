@@ -12,6 +12,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
@@ -53,18 +54,31 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
             return null;
         }
 
-        // 使用业务时间窗口查询
-        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
-        Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        // 血压只传每天7点的数据
+        // 构建7点的时间窗口: [07:00, 08:00)
+        LocalDate today = planTime.toLocalDate();
+        Date startTime = Date.from(today.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date endTime = Date.from(today.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+
+        // 如果当前时间早于7点，则查询前一天7点的数据
+        if (planTime.getHour() < 7) {
+            LocalDate yesterday = today.minusDays(1);
+            startTime = Date.from(yesterday.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            endTime = Date.from(yesterday.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        }
 
         // 查询收缩压
         Document systolicDoc = findRecordByCode(pid, startTime, endTime, SYSTOLIC_CODE);
         // 查询舒张压
         Document diastolicDoc = findRecordByCode(pid, startTime, endTime, DIASTOLIC_CODE);
 
+        log.info("STEP_04_BP_QUERY traceId={} pid={} 查询血压: startTime={}, endTime={}, systolicDoc={}, diastolicDoc={}",
+                traceId, maskPid(pid), startTime, endTime, systolicDoc != null ? "found" : "null", diastolicDoc != null ? "found" : "null");
+
         String systolic = systolicDoc != null ? getValueFromDocByKey(systolicDoc, "strVal", String.class) : null;
         String diastolic = diastolicDoc != null ? getValueFromDocByKey(diastolicDoc, "strVal", String.class) : null;
+
+        log.info("STEP_04_BP_VALUES traceId={} pid={} 收缩压={}, 舒张压={}", traceId, maskPid(pid), systolic, diastolic);
 
         BloodPressurePair pair = BloodPressurePair.builder()
                 .systolic(systolic)
@@ -97,7 +111,8 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
                 .unit("mmHg")
                 .build();
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        // 使用收缩压记录的 bedside.time
+        fillCommonFields(payload, patient, systolicDoc, mongoTemplate, traceId);
         return payload;
     }
 
@@ -109,7 +124,6 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(code)
                 .and("time").gte(startTime).lt(endTime)
-                .and("valid").is(true)
         ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
                 .limit(1);
 

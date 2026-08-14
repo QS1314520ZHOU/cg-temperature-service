@@ -8,8 +8,8 @@ import java.util.List;
 public class MyConfig {
     public static final String YMDHMS = "yyyy-MM-dd HH:mm:ss";
     public static final String YMD = "yyyy-MM-dd";
-    /* 16 */   public static final List<Integer> TIMEPOINTS = Arrays.asList(new Integer[]{Integer.valueOf(3), Integer.valueOf(7), Integer.valueOf(11), Integer.valueOf(15), Integer.valueOf(19), Integer.valueOf(23)});
-    /* 17 */   public static final List<Integer> XYTIMEPOINTS = Arrays.asList(new Integer[]{Integer.valueOf(7), Integer.valueOf(15)});
+    /* 16 */   public static final List<Integer> TIMEPOINTS = Arrays.asList(new Integer[]{Integer.valueOf(2), Integer.valueOf(6), Integer.valueOf(10), Integer.valueOf(14), Integer.valueOf(18), Integer.valueOf(22)});
+    /* 17 */   public static final List<Integer> XYTIMEPOINTS = Arrays.asList(new Integer[]{Integer.valueOf(7)});
 
     public static final String BEISIDE_CODE_NIAOLIANG = "param_niaoLiang";
     /* 20 */   public static final List<String> CODES_XUEYA = List.of("param_nibp_d", "param_ibp_d");

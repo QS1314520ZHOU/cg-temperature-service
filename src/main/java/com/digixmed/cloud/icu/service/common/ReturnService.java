@@ -8,6 +8,7 @@ import com.digixmed.cloud.icu.pojo.DataValue;
 import com.digixmed.cloud.icu.pojo.IntermediateTable;
 import com.digixmed.cloud.icu.util.DataUtils;
 import com.digixmed.cloud.icu.util.HttpUtils;
+import com.digixmed.cloud.icu.util.ResponseUtils;
 import com.digixmed.cloud.icu.util.XMLUtils;
 
 import java.util.ArrayList;
@@ -55,9 +56,9 @@ public class ReturnService {
         /*  54 */
         if (this.isUpload.booleanValue()) {
             /*  55 */
-            log.error(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "进行回传");
+            log.info(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "进行回传");
             /*  56 */
-            log.error("url:" + this.url + "---isUpload:" + this.isUpload + "-----testPid" + this.testPid);
+            log.info("url:" + this.url + "---isUpload:" + this.isUpload + "-----testPid" + this.testPid);
             /*  57 */
             int count = 0;
             /*  58 */
@@ -76,7 +77,7 @@ public class ReturnService {
             /*  65 */
             if (tableInfos.size() == 0) {
                 /*  66 */
-                log.error(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "--tableInfos为空");
+                log.info(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "--tableInfos为空");
 
                 return;
             }
@@ -99,37 +100,34 @@ public class ReturnService {
                 String patientId = tableInfo.getPatientId();
 
 
-                /*  83 */
-                Boolean flag = Boolean.valueOf(false);
-                /*  84 */
-                for (String code : MyConfig.CODES) {
-                    /*  85 */
-                    if (!code.equals(tableInfo.getSignCode())) {
-                        /*  87 */
-                        if (ObjectUtil.isNotEmpty(patientId)) {
-
-                            /*  89 */
-                            Document document = this.mongoDao.selectPatientWaitDischarged(tableInfo.getPid());
-
-                            /*  91 */
-                            Document document2 = this.mongoDao.selectPatientDischarged(tableInfo.getPid());
-                            /*  92 */
-                            if (ObjectUtil.isNotEmpty(document) || ObjectUtil.isNotEmpty(document2)) {
-                                /*  93 */
-                                log.info(tableInfo.getPid() + "病人待出科或者出科状态出入量不回传");
-                                /*  94 */
-                                flag = Boolean.valueOf(true);
-                            }
-                        }
-                    }
+                // 准入原则：只回传 patient 集合中存在的 _id；不存在直接跳过，
+                // 不再判断金仓在科状态，也不再按待出科/已出科拦截出入量记录。
+                Document patientDoc = this.mongoDao.getPatientInfoSafely(tableInfo.getPid());
+                if (patientDoc == null) {
+                    log.info("病人pid={}在patient集合中不存在，{}记录不回传", new Object[]{tableInfo.getPid(), tableInfo.getSignCode()});
+                    continue;
                 }
 
-
-                /* 101 */
-                if (flag.booleanValue()) {
-                    /* 102 */
-                    log.error(patientId + "病人待出科或者出科状态出入量不回传");
-
+                // 历史数据可能未落库病人标识，回传前用 patient 文档补齐：
+                // patientId = patient.mrn，patientName = patient.name，mrn = patient.hisPid
+                String docPatientId = readString(patientDoc, "mrn");
+                String docPatientName = readString(patientDoc, "name");
+                String docMrn = readString(patientDoc, "hisPid");
+                if (docPatientId != null) {
+                    tableInfo.setPatientId(docPatientId);
+                }
+                if (docPatientName != null) {
+                    tableInfo.setPatientName(docPatientName);
+                }
+                if (docMrn != null) {
+                    tableInfo.setMrn(docMrn);
+                }
+                if (ObjectUtil.isEmpty(tableInfo.getMrn())) {
+                    log.warn("病人pid={}的patient.hisPid为空，mrn入参将为空串", new Object[]{tableInfo.getPid()});
+                }
+                patientId = tableInfo.getPatientId();
+                if (ObjectUtil.isEmpty(patientId)) {
+                    log.info("病人pid={}的patient.mrn为空，patientId无法赋值，{}记录不回传", new Object[]{tableInfo.getPid(), tableInfo.getSignCode()});
                     continue;
                 }
 
@@ -153,7 +151,7 @@ public class ReturnService {
                 /* 115 */
                 if (this.isUpload.booleanValue()) {
                     /* 116 */
-                    log.error(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "开始组装回传");
+                    log.info(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "开始组装回传");
 
                     /* 118 */
                     Map<String, String> resultMap = upload(requestStr);
@@ -169,11 +167,11 @@ public class ReturnService {
                     /* 124 */
                     tableInfo.setReturnTime(new Date());
                     /* 125 */
-                    log.error(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "回传结束");
+                    log.info(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "回传结束");
                     /* 126 */
                     if ("200".equals(resultMap.get("code"))) {
                         /* 127 */
-                        if (msg != null && msg.contains("成功")) {
+                        if (ResponseUtils.isBusinessSuccess(msg)) {
                             /* 128 */
                             updateUploadLog(tableInfo, Boolean.valueOf(true), null);
                             continue;
@@ -191,17 +189,17 @@ public class ReturnService {
                     continue;
                 }
                 /* 138 */
-                log.error("回传的配置未打开,待回传的报文为：" + dataStr);
+                log.warn("回传的配置未打开,待回传的报文为：" + dataStr);
             }
 
             /* 141 */
             log.info("成功回传了{}病人的{}条体征记录", this.testPid, Integer.valueOf(count));
         } else {
             /* 143 */
-            log.error("测试时，不进行回传!");
+            log.warn("测试时，不进行回传!");
         }
         /* 145 */
-        log.error(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "结束回传");
+        log.info(DateUtil.format(new Date(), "yyyy-MM-dd HH:mm:ss") + "结束回传");
     }
 
 
@@ -253,21 +251,28 @@ public class ReturnService {
             /* 190 */
             data.setIsValid(valid.intValue());
             /* 191 */
-            data.setMrn(tableInfo.getMrn());
+            // mrn 取自 patient.hisPid；null 会导致 JAXB 直接省略 <mrn> 节点，因此空值统一输出空串
+            data.setMrn(tableInfo.getMrn() != null ? tableInfo.getMrn() : "");
             /* 192 */
-            data.setPatientId(tableInfo.getPatientId());
+            // patientId 取自 patient.mrn
+            data.setPatientId(tableInfo.getPatientId() != null ? tableInfo.getPatientId() : "");
             /* 193 */
-            data.setPatientName(tableInfo.getPatientName());
+            // patientName 取自 patient.name
+            data.setPatientName(tableInfo.getPatientName() != null ? tableInfo.getPatientName() : "");
             /* 194 */
-            data.setRecordNurseId(tableInfo.getAuthorId());
+            // recordNurseId 为空时默认 "dba"
+            String nurseId = tableInfo.getAuthorId();
+            data.setRecordNurseId((nurseId != null && !nurseId.isEmpty()) ? nurseId : "dba");
             /* 195 */
-            data.setRecordNurseName(tableInfo.getAuthorName());
+            // recordNurseName：优先 param_Yishi.editUser -> account.trueName，其次本体征记录 editUser -> account.trueName，均取不到时默认 "系统管理员"
+            String nurseName = resolveRecordNurseName(tableInfo);
+            data.setRecordNurseName((nurseName != null && !nurseName.isEmpty()) ? nurseName : "系统管理员");
             /* 196 */
             data.setWardCode("125011");
             /* 197 */
             data.setPlanTime(tableInfo.getTimePoint());
             /* 198 */
-            data.setRecordTime(tableInfo.getLastEditTime());
+            data.setRecordTime(tableInfo.getTimePoint());
             /* 199 */
             data.setRemark("");
             /* 200 */
@@ -308,7 +313,10 @@ public class ReturnService {
                 /* 219 */
                 data.setVitalsignNVal1(signValue);
                 /* 220 */
-                data.setVitalsignSVal1("腋温");
+                /* vitalsignSVal1：对应时间节点 param_tiWenBuWei 的 strVal */
+                data.setVitalsignSVal1(resolveTemperatureLocation(tableInfo));
+                /* 体温复测值：无复测时固定传空串，保证报文中始终存在 <vitalsignNVal2> 节点 */
+                data.setVitalsignNVal2(resolveRecheckValue(tableInfo, signValue));
                 /* 221 */
             } else if (MyConfig.CODES[1].contains(tableInfo.getSignCode())) {
                 /* 222 */
@@ -347,6 +355,167 @@ public class ReturnService {
         }
         /* 242 */
         return data;
+    }
+
+
+    /**
+     * 是否为出入量类记录（尿量、大便、入量/出量汇总等）。
+     * 只有这类记录在病人待出科/出科后需要停止回传，体温、心率、呼吸、血压等不受影响。
+     */
+    private boolean isInOutCode(String signCode) {
+        if (signCode == null) {
+            return false;
+        }
+        for (String code : MyConfig.NLCODES) {
+            if (code.equals(signCode)) {
+                return true;
+            }
+        }
+        for (String code : MyConfig.DBCODES) {
+            if (code.equals(signCode)) {
+                return true;
+            }
+        }
+        for (String code : MyConfig.BEISIDE_CODES_DABIAN) {
+            if (code.equals(signCode)) {
+                return true;
+            }
+        }
+        for (String code : MyConfig.CLCODES) {
+            if (code.equals(signCode)) {
+                return true;
+            }
+        }
+        for (String code : MyConfig.RLCODES) {
+            if (code.equals(signCode)) {
+                return true;
+            }
+        }
+        return "param_in_hour_sum".equals(signCode)
+                || "param_out_hour_sum".equals(signCode)
+                || "param_out_other".equals(signCode);
+    }
+
+    /**
+     * 体温复测值（vitalsignNVal2）。
+     * 中间表 signValue2 已由 HandleService 按“NVal1>=38.5 且 1 小时内复测值>=38.5”的规则计算，
+     * 此处再做一次兜底校验，不满足条件一律传空串。
+     */
+    private String resolveRecheckValue(IntermediateTable tableInfo, String signValue) {
+        if (tableInfo == null) {
+            return "";
+        }
+        double origin;
+        try {
+            origin = Double.parseDouble(signValue == null ? "" : signValue.trim());
+        } catch (NumberFormatException e) {
+            return "";
+        }
+        if (origin < 38.5D) {
+            return "";
+        }
+        String recheck = tableInfo.getSignValue2();
+        if (recheck == null || recheck.trim().isEmpty()) {
+            return "";
+        }
+        try {
+            if (Double.parseDouble(recheck.trim()) < 38.5D) {
+                return "";
+            }
+        } catch (NumberFormatException e) {
+            return "";
+        }
+        return recheck.trim();
+    }
+
+    /**
+     * 体温部位（vitalsignSVal1）：取对应时间节点 bedside.code=param_tiWenBuWei 的 strVal。
+     * 优先用中间表已落库的值，历史数据没有时实时回查 bedside，取不到传空串。
+     */
+    private String resolveTemperatureLocation(IntermediateTable tableInfo) {
+        if (tableInfo == null) {
+            return "";
+        }
+        String location = tableInfo.getSignLocation();
+        if (location != null && !location.trim().isEmpty()) {
+            return location.trim();
+        }
+        Document doc = this.mongoDao.selectBedSideByCodeAndTimePoint(tableInfo.getPid(), "param_tiWenBuWei", tableInfo.getTimePoint());
+        if (doc != null) {
+            Object strVal = doc.get("strVal");
+            if (strVal != null && !strVal.toString().trim().isEmpty()) {
+                return strVal.toString().trim();
+            }
+        }
+        log.info("体温部位：pid={},时间点={},未找到 param_tiWenBuWei，vitalsignSVal1 传空",
+                new Object[]{tableInfo.getPid(), tableInfo.getTimePoint()});
+        return "";
+    }
+
+    /**
+     * recordNurseName：
+     *   1. 优先取对应时间节点 bedside.code=param_Yishi 的 editUser 对应的 account.trueName；
+     *   2. 没有 param_Yishi 时，取本条体征记录（如 param_T）的 editUser 对应的 account.trueName；
+     *   3. 都取不到时用中间表已落库的 authorName，最终由调用方兼底 "系统管理员"。
+     */
+    private String resolveRecordNurseName(IntermediateTable tableInfo) {
+        if (tableInfo == null) {
+            return null;
+        }
+        Document nurseDoc = this.mongoDao.selectBedSideByCodeAndTimePoint(tableInfo.getPid(), "param_Yishi", tableInfo.getTimePoint());
+        String trueName = queryTrueNameByEditUser(readEditUser(nurseDoc));
+        if (trueName != null) {
+            return trueName;
+        }
+        Document signDoc = this.mongoDao.selectBedSideByCodeAndTimePoint(tableInfo.getPid(), tableInfo.getSignCode(), tableInfo.getTimePoint());
+        trueName = queryTrueNameByEditUser(readEditUser(signDoc));
+        if (trueName != null) {
+            return trueName;
+        }
+        return tableInfo.getAuthorName();
+    }
+
+    /** 读取 patient 文档字符串字段（空串视为 null） */
+    private String readString(Document doc, String key) {
+        if (doc == null) {
+            return null;
+        }
+        Object value = doc.get(key);
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    /** 读取 editUser（兼容 String 与 ObjectId 两种存储形式） */
+    private String readEditUser(Document doc) {
+        if (doc == null) {
+            return null;
+        }
+        Object editUser = doc.get("editUser");
+        if (editUser == null) {
+            return null;
+        }
+        String value = editUser.toString().trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    /** 根据 account._id 查 account.trueName */
+    private String queryTrueNameByEditUser(String editUser) {
+        if (editUser == null) {
+            return null;
+        }
+        Document account = this.mongoDao.selectDoctorByAccountId(editUser);
+        if (account == null) {
+            return null;
+        }
+        Object trueName = account.get("trueName");
+        if (trueName == null) {
+            return null;
+        }
+        String value = trueName.toString().trim();
+        return value.isEmpty() ? null : value;
     }
 
 

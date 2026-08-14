@@ -133,7 +133,8 @@ public class VitalSignPayload {
      * 记录护士姓名
      * 优先从param_Yishi解析
      */
-    private String recordNurseName;
+    @Builder.Default
+    private String recordNurseName = "系统管理员";
 
     /**
      * 单位

@@ -538,13 +538,13 @@ public class DataService {
     }
 
     public IntermediateTable filterByCode(Document doc, Boolean isFirst) {
-        TemperatureServiceImpl temperatureServiceImpl;
-        PulseServiceImpl pulseServiceImpl;
-        IBPServiceImpl iBPServiceImpl;
-        CRLServiceImpl cRLServiceImpl;
-        UrinateServiceImpl urinateServiceImpl;
-        FaecesCountServiceImpl faecesCountServiceImpl;
-        BreatheServiceImpl breatheServiceImpl;
+        TemperatureServiceImpl temperatureServiceImpl = null;
+        PulseServiceImpl pulseServiceImpl = null;
+        IBPServiceImpl iBPServiceImpl = null;
+        CRLServiceImpl cRLServiceImpl = null;
+        UrinateServiceImpl urinateServiceImpl = null;
+        FaecesCountServiceImpl faecesCountServiceImpl = null;
+        BreatheServiceImpl breatheServiceImpl = null;
         DefaultServiceImpl defaultServiceImpl=this.defaultServiceImpl;
         /* 409 */
         if (doc == null) {
@@ -617,6 +617,21 @@ public class DataService {
                 intermediateTable = null;
             }
         }
+
+        // 处理血压（需要查询收缩压并拼接）
+        if (iBPServiceImpl != null) {
+            try {
+                intermediateTable = iBPServiceImpl.handle(doc);
+                if (intermediateTable != null) {
+                    String pid = getValueFromDocByKey(doc, "pid", String.class);
+                    intermediateTable = iBPServiceImpl.special(intermediateTable, pid, doc);
+                }
+            } catch (Exception e) {
+                log.error("filterByCode() -->bedSide记录：{} , {} 的血压处理报错:{},e:{}", new Object[]{bedsideId, code, e.getMessage(), e.toString()});
+                intermediateTable = null;
+            }
+        }
+
         /* 458 */
         return intermediateTable;
     }

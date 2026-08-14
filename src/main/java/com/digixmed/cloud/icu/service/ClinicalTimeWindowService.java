@@ -127,11 +127,8 @@ public class ClinicalTimeWindowService {
         if (point == null) {
             return null;
         }
+        // getNextVitalPoint 已处理跨天（22:00 -> 次日02:00），不会返回 null
         LocalDateTime nextPoint = getNextVitalPoint(point);
-        if (nextPoint == null) {
-            // 22:00之后的下一个时间点是次日02:00
-            nextPoint = buildVitalPoint(date.plusDays(1), 2);
-        }
         return ClinicalTimeWindow.builder()
                 .start(point)
                 .end(nextPoint)
@@ -191,11 +188,11 @@ public class ClinicalTimeWindowService {
      * @return 上一个标准时间点
      */
     public LocalDateTime getPreviousVitalPoint(LocalDateTime current) {
-        int currentHour = current.getHour();
         for (int i = VITAL_SIGN_HOURS.size() - 1; i >= 0; i--) {
-            int h = VITAL_SIGN_HOURS.get(i);
-            if (h < currentHour) {
-                return LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(h, 0, 0));
+            // 按完整时间比较，避免只比小时导致 10:00 整点落错窗口
+            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(VITAL_SIGN_HOURS.get(i), 0, 0));
+            if (candidate.isBefore(current)) {
+                return candidate;
             }
         }
         // 当前时间在02:00之前，上一个时间点是前一天22:00
@@ -209,10 +206,10 @@ public class ClinicalTimeWindowService {
      * @return 下一个标准时间点
      */
     public LocalDateTime getNextVitalPoint(LocalDateTime current) {
-        int currentHour = current.getHour();
         for (int h : VITAL_SIGN_HOURS) {
-            if (h > currentHour) {
-                return LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(h, 0, 0));
+            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(h, 0, 0));
+            if (candidate.isAfter(current)) {
+                return candidate;
             }
         }
         // 当前时间在22:00或之后，下一个时间点是次日02:00

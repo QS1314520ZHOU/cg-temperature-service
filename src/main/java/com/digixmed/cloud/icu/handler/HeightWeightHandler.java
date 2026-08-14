@@ -145,12 +145,42 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
      * 检查是否应该发送身高体重
      */
     public boolean shouldSendHeightWeight(String patientId, LocalDate reportDate) {
-        InpatientDTO inpatient = inpatientRepository.findByPatientId(patientId);
-        if (inpatient == null || inpatient.getAdmissionWardTime() == null) {
+        LocalDate admissionDate = resolveAdmissionDate(patientId);
+        if (admissionDate == null) {
             return false;
         }
-        LocalDate admissionDate = inpatient.getAdmissionWardTime().toLocalDate();
         return timeWindowService.shouldSendHeightWeight(admissionDate, reportDate);
+    }
+
+    /**
+     * 入科日期：优先金仓 admission_ward_time，查不到时回退 Mongo patient.icuAdmissionTime，
+     * 不再因为金仓无在科记录而直接不发送。
+     */
+    private LocalDate resolveAdmissionDate(String patientId) {
+        try {
+            InpatientDTO inpatient = inpatientRepository.findByPatientId(patientId);
+            if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
+                return inpatient.getAdmissionWardTime().toLocalDate();
+            }
+        } catch (Exception e) {
+            log.warn("查询金仓入科时间失败 patientId={}: {}", patientId, e.getMessage());
+        }
+
+        if (patientId == null || patientId.trim().isEmpty()) {
+            return null;
+        }
+
+        Query query = new Query(new Criteria().orOperator(
+                Criteria.where("mrn").is(patientId),
+                Criteria.where("hisPid").is(patientId)
+        ));
+        Document patient = mongoTemplate.findOne(query, Document.class, "patient");
+        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
+        if (icuAdmissionTime == null) {
+            log.info("未获取到入科时间，跳过身高体重 patientId={}", patientId);
+            return null;
+        }
+        return icuAdmissionTime.toInstant().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate();
     }
 
     /**

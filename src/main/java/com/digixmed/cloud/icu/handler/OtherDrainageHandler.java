@@ -13,10 +13,10 @@ import java.time.LocalDateTime;
  * 其他引流量处理器
  *
  * 业务目的：处理其他引流量汇总
- * 源数据：所有满足code包含"_tube_"的，排除param_tube_胃肠减压
+ * 源数据：窗口内所有包含 "_tube_" 的记录，排除 param_tube_胃肠减压
  * 输出：vitalsignName=引流量(ml), vitalsignType=3126, unit=ml
  *
- * 必须只统计configParam.calculation="out"的有效数值
+ * 计算逻辑：对窗口内所有 code 包含 "_tube_" 但不是 "param_tube_胃肠减压" 的记录求和
  */
 @Component
 public class OtherDrainageHandler extends BaseVitalSignHandler {

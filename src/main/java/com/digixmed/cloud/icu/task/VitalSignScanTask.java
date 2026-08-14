@@ -95,6 +95,10 @@ public class VitalSignScanTask {
 
     /**
      * 执行普通体征扫描
+     *
+     * 扫描逻辑：根据当前时间，扫描当前时间点及之前可能补录的时间点
+     * 例如当前10:00，扫描 02:00、06:00、10:00 三个时间点的窗口
+     * 通过 upsertPending 的幂等机制处理：相同数据跳过，不同数据重新回传
      */
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
@@ -106,20 +110,34 @@ public class VitalSignScanTask {
             LocalDateTime currentVitalPoint = timeWindowService.getCurrentVitalPoint();
             log.info("STEP_02_WINDOW_CREATED traceId={} 当前标准时间点={}", traceId, currentVitalPoint);
 
-            ClinicalTimeWindow scanWindow = timeWindowService.buildVitalPointWindow(
-                    currentVitalPoint.toLocalDate(), currentVitalPoint.getHour());
+            // 获取需要扫描的时间点列表（当前时间点 + 之前可能补录的时间点）
+            List<LocalDateTime> scanPoints = getScanTimePoints(currentVitalPoint);
+            log.info("STEP_02_WINDOW_CREATED traceId={} 需要扫描的时间点数量={} 时间点={}",
+                    traceId, scanPoints.size(), scanPoints);
 
-            // 准入原则：不再查金仓在科患者列表，只看 bedside 是否有数据 + patient 集合中是否存在该 _id
-            List<String> pids = findCandidatePids(scanWindow, traceId);
-            log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, pids.size());
+            // 收集所有时间点窗口内的候选患者（去重）
+            java.util.Set<String> allPids = new java.util.LinkedHashSet<>();
+            for (LocalDateTime point : scanPoints) {
+                ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
+                        point.toLocalDate(), point.getHour());
+                List<String> pids = findCandidatePids(window, traceId);
+                allPids.addAll(pids);
+            }
 
-            for (String pid : pids) {
+            log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, allPids.size());
+
+            // 对每个患者，处理所有时间点
+            for (String pid : allPids) {
                 Document patient = findMongoPatientByPid(pid);
                 if (patient == null) {
                     log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
                     continue;
                 }
-                processPatientByPid(pid, patient, currentVitalPoint, scanWindow, traceId);
+                for (LocalDateTime point : scanPoints) {
+                    ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
+                            point.toLocalDate(), point.getHour());
+                    processPatientByPid(pid, patient, point, window, traceId);
+                }
             }
 
             // 血压：直接从 bedside 表查询有8点数据的患者（不依赖在科列表）
@@ -132,6 +150,37 @@ public class VitalSignScanTask {
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描异常", traceId, e);
         }
+    }
+
+    /**
+     * 获取需要扫描的时间点列表
+     * 根据当前时间点，返回当前及之前的所有标准时间点（用于补录数据扫描）
+     *
+     * 例如：
+     * - 当前10:00 → [02:00, 06:00, 10:00]
+     * - 当前14:00 → [02:00, 06:00, 10:00, 14:00]
+     * - 当前02:00 → [02:00]（只扫当天02:00）
+     *
+     * @param currentVitalPoint 当前标准时间点
+     * @return 需要扫描的时间点列表（按时间顺序）
+     */
+    private List<LocalDateTime> getScanTimePoints(LocalDateTime currentVitalPoint) {
+        List<LocalDateTime> points = new ArrayList<>();
+        LocalDate date = currentVitalPoint.toLocalDate();
+        int currentHour = currentVitalPoint.getHour();
+
+        // 标准时间点：02, 06, 10, 14, 18, 22
+        List<Integer> vitalHours = timeWindowService.getVitalSignHours();
+
+        for (int hour : vitalHours) {
+            if (hour <= currentHour) {
+                points.add(LocalDateTime.of(date, java.time.LocalTime.of(hour, 0, 0)));
+            }
+        }
+
+        // 如果当前时间点是列表中的第一个（02:00），只返回它自己
+        // 不需要扫描前一天的时间点（那些已经在前一天扫描过了）
+        return points;
     }
 
     private void processPatientByPid(String pid, Document patient, LocalDateTime planTime,

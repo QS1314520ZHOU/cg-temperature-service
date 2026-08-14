@@ -433,6 +433,8 @@ public class IntermediateService {
             update.set("recordTime", Date.from(
                     payload.getRecordTime().atZone(ZONE).toInstant()));
         }
+        update.set("recheckRequired", payload.isRecheckRequired());
+        update.set("recheckCompleted", payload.isRecheckCompleted());
     }
 
     /**
@@ -466,5 +468,7 @@ public class IntermediateService {
             doc.append("recordTime", Date.from(
                     payload.getRecordTime().atZone(ZONE).toInstant()));
         }
+        doc.append("recheckRequired", payload.isRecheckRequired());
+        doc.append("recheckCompleted", payload.isRecheckCompleted());
     }
 }

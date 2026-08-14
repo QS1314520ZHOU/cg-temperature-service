@@ -93,25 +93,11 @@ public class TemperatureHandler extends BaseVitalSignHandler {
         // 默认传空字符串，保证报文中始终存在<vitalsignNVal2>节点
         payload.setVitalsignNVal2("");
 
-        // 复测逻辑：体温 >= 38.5℃
+        // 复测逻辑：体温 >= 38.5℃ 时设置复测标记，由 TemperatureRecheckTask 异步处理
         if (tempValue >= RECHECK_THRESHOLD) {
-            // vitalsignSVal1 始终为体温部位（param_tiWenBuWei.strVal），不再覆盖为体温值
-            // 查询复测值
-            // 复测窗口以体征记录的 bedside.time 为基准（而非标准时间点）
-            LocalDateTime recheckBase = payload.getPlanTime() != null ? payload.getPlanTime() : planTime;
-            String recheckValue = findRecheckValue(pid, recheckBase, bedsideId, traceId);
-            // vitalsignNVal2 = 复测值（如果仍 >= 38.5）
-            if (recheckValue != null) {
-                Double recheckNum = parseDouble(recheckValue);
-                if (recheckNum != null && recheckNum >= RECHECK_THRESHOLD) {
-                    payload.setVitalsignNVal2(recheckValue);
-                } else {
-                    payload.setVitalsignNVal2("");
-                }
-            } else {
-                payload.setVitalsignNVal2("");
-            }
-            log.info("STEP_06_RECHECK traceId={} 原始值={} 复测值={}", traceId, formatDouble(tempValue), recheckValue);
+            payload.setRecheckRequired(true);
+            payload.setRecheckCompleted(false);
+            log.info("STEP_06_RECHECK traceId={} 原始值={} >= 38.5，标记需要复测", traceId, formatDouble(tempValue));
         }
 
         return payload;
@@ -142,51 +128,4 @@ public class TemperatureHandler extends BaseVitalSignHandler {
         return null;
     }
 
-    /**
-     * 查找复测体温值
-     * 查询 (标准时间点, 标准时间点+1小时] 内的复测记录
-     *
-     * @param pid 患者MongoDB ID
-     * @param planTime 标准时间点
-     * @param originalBedsideId 原始记录bedsideId
-     * @param traceId 追踪ID
-     * @return 复测值字符串，未找到返回null
-     */
-    private String findRecheckValue(String pid, LocalDateTime planTime, String originalBedsideId, String traceId) {
-        // 复测窗口：(标准时间点, 标准时间点+1小时]
-        // 排除标准时间点本身，查询之后1小时内的记录
-        Date start = Date.from(planTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date end = Date.from(planTime.plusHours(1).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-
-        // 查询窗口内的有效param_T记录（排除标准时间点本身）
-        Query query = new Query(Criteria.where("pid").is(pid)
-                .and("code").is(SOURCE_CODE)
-                .and("valid").ne(false)
-                .and("time").gt(start).lte(end)
-        ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "time"));
-
-        List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
-
-        if (records == null || records.isEmpty()) {
-            log.info("STEP_06_RECHECK traceId={} 未找到复测记录", traceId);
-            return null;
-        }
-
-        // 排除原始记录，取第一条
-        for (Document record : records) {
-            String recordId = getValueFromDocByKey(record, "_id", Object.class) != null
-                    ? getValueFromDocByKey(record, "_id", Object.class).toString() : "unknown";
-            if (!recordId.equals(originalBedsideId)) {
-                String recheckStr = getValueFromDocByKey(record, "strVal", String.class);
-                Double recheckValue = parseDouble(recheckStr);
-                if (recheckValue != null) {
-                    log.info("STEP_06_RECHECK traceId={} 找到复测记录 bedsideId={} value={}", traceId, recordId, recheckValue);
-                    return formatDouble(recheckValue);
-                }
-            }
-        }
-
-        log.info("STEP_06_RECHECK traceId={} 窗口内无有效复测记录", traceId);
-        return null;
-    }
 }

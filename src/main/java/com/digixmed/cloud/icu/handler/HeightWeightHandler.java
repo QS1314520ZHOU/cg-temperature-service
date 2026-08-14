@@ -143,9 +143,14 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
 
     /**
      * 检查是否应该发送身高体重
+     *
+     * @param patientId 住院号（patient.mrn）
+     * @param reportDate 报告日期
+     * @param patient MongoDB patient文档
+     * @return 是否应该发送
      */
-    public boolean shouldSendHeightWeight(String patientId, LocalDate reportDate) {
-        LocalDate admissionDate = resolveAdmissionDate(patientId);
+    public boolean shouldSendHeightWeight(String patientId, LocalDate reportDate, Document patient) {
+        LocalDate admissionDate = resolveAdmissionDate(patientId, patient);
         if (admissionDate == null) {
             return false;
         }
@@ -153,10 +158,31 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     }
 
     /**
-     * 入科日期：优先金仓 admission_ward_time，查不到时回退 Mongo patient.icuAdmissionTime，
-     * 不再因为金仓无在科记录而直接不发送。
+     * 入科日期解析逻辑：
+     * 1. 先查 patient.icuAdmissionTime
+     * 2. 如果报告日期与 icuAdmissionTime 同一天（第一天），直接返回
+     * 3. 不在同一天，查 KingBase admission_ward_time
+     * 4. 查不到，日志记录，返回 null
+     *
+     * @param patientId 住院号（patient.mrn）
+     * @param patient MongoDB patient文档
+     * @return 入科日期，查不到返回null
      */
-    private LocalDate resolveAdmissionDate(String patientId) {
+    private LocalDate resolveAdmissionDate(String patientId, Document patient) {
+        // 1. 先查 patient.icuAdmissionTime
+        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
+        LocalDate icuDate = icuAdmissionTime != null
+                ? icuAdmissionTime.toInstant().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()
+                : null;
+
+        // 2. 如果报告日期与icuAdmissionTime同一天（第一天），直接返回
+        LocalDate today = LocalDate.now();
+        if (icuDate != null && icuDate.equals(today)) {
+            log.info("报告日期与入科日期同一天，直接使用icuAdmissionTime patientId={}", patientId);
+            return icuDate;
+        }
+
+        // 3. 不在同一天，查KingBase admission_ward_time
         try {
             InpatientDTO inpatient = inpatientRepository.findByPatientId(patientId);
             if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
@@ -166,21 +192,9 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             log.warn("查询金仓入科时间失败 patientId={}: {}", patientId, e.getMessage());
         }
 
-        if (patientId == null || patientId.trim().isEmpty()) {
-            return null;
-        }
-
-        Query query = new Query(new Criteria().orOperator(
-                Criteria.where("mrn").is(patientId),
-                Criteria.where("hisPid").is(patientId)
-        ));
-        Document patient = mongoTemplate.findOne(query, Document.class, "patient");
-        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
-        if (icuAdmissionTime == null) {
-            log.info("未获取到入科时间，跳过身高体重 patientId={}", patientId);
-            return null;
-        }
-        return icuAdmissionTime.toInstant().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate();
+        // 4. 查不到，日志记录，返回null
+        log.warn("未获取到admission_ward_time，跳过身高体重 patientId={}", patientId);
+        return null;
     }
 
     /**

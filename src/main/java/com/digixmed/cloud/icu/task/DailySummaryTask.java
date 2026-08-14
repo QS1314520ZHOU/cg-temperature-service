@@ -183,7 +183,7 @@ public class DailySummaryTask {
             processNetUltrafiltration(records, patient, pid, window, patientTraceId);
 
             // 身高体重（检查是否需要发送）
-            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, today)) {
+            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, today, patient)) {
                 LocalDateTime sendTime = window.getReportDate();
                 VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, sendTime, patientTraceId);
                 if (heightPayload != null) {
@@ -202,19 +202,21 @@ public class DailySummaryTask {
 
     /**
      * 处理大便次数
+     * 只使用 param_汇总大便次数，只获取07:00时间点的数据
      */
     private void processStoolCount(List<Document> records, Document patient, String pid,
                                     ClinicalTimeWindow window, String traceId) {
-        List<String> stoolCodes = StoolCountHandler.getStoolCodes();
-        Optional<Document> stoolRecord = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && stoolCodes.contains(code);
-                })
-                .findFirst();
+        // 只查07:00时间点的数据（窗口结束时间就是07:00）
+        Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date startDate = Date.from(window.getEnd().minusHours(1).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-        if (stoolRecord.isPresent()) {
-            VitalSignPayload payload = stoolCountHandler.handle(stoolRecord.get(), patient,
+        Query query = new Query(Criteria.where("pid").is(pid)
+                .and("code").is("param_汇总大便次数")
+                .and("time").gte(startDate).lt(endDate));
+        Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
+
+        if (stoolRecord != null) {
+            VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
                 intermediateService.upsertPending(payload, traceId);

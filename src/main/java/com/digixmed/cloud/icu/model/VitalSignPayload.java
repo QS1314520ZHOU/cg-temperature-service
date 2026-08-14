@@ -169,4 +169,14 @@ public class VitalSignPayload {
      * 患者MongoDB ID（pid）
      */
     private String mongoPid;
+
+    /**
+     * 是否需要复测（体温>=38.5℃时为true）
+     */
+    private boolean recheckRequired;
+
+    /**
+     * 复测是否完成
+     */
+    private boolean recheckCompleted;
 }

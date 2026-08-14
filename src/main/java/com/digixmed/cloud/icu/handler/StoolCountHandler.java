@@ -15,10 +15,9 @@ import java.util.List;
  * 大便次数处理器
  *
  * 业务目的：处理大便次数汇总
- * 源数据：优先 param_汇总大便次数，兼容 param_daBianCiShu, param_daBianAmount
+ * 源数据：只使用 param_汇总大便次数，其他code不考虑
  * 输出：vitalsignName=大便次数, vitalsignType=1007, unit=次
- *
- * 必须记录：windowStart, windowEnd, sourceCode, sourceBedsideId, finalValue
+ * 时间点：只获取07:00的数据
  */
 @Component
 public class StoolCountHandler extends BaseVitalSignHandler {
@@ -26,12 +25,10 @@ public class StoolCountHandler extends BaseVitalSignHandler {
     private MongoTemplate mongoTemplate;
 
     /**
-     * 大便次数代码别名，按优先级排列
+     * 大便次数代码（只使用汇总大便次数）
      */
     private static final List<String> STOOL_CODES = Arrays.asList(
-            "param_汇总大便次数",
-            "param_daBianCiShu",
-            "param_daBianAmount"
+            "param_汇总大便次数"
     );
 
     public StoolCountHandler(PatientIdentityMapper patientIdentityMapper) {

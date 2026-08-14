@@ -3,7 +3,7 @@ spring:
     name: CGTemperatureService
   data:
     mongodb:
-      uri: mongodb://admin:Dxm99%2A@10.35.4.11:32121/SmartCare?authSource=admin
+      uri: mongodb://dxm:DB%40dmin@10.35.4.11:32121/SmartCare?maxPoolSize=100&waitQueueTimeoutMS=2000&connectTimeoutMS=3000&socketTimeoutMS=5000
       auto-index-creation: false
 
 server:

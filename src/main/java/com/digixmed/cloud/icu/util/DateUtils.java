@@ -2,13 +2,13 @@ package com.digixmed.cloud.icu.util;
 
 import cn.hutool.core.date.DateTime;
 import cn.hutool.core.date.DateUtil;
-import com.digixmed.cloud.icu.service.common.MyConfig;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
@@ -16,6 +16,13 @@ import java.util.stream.Stream;
 
 
 public class DateUtils {
+
+    /** 标准体征时间点：2, 6, 10, 14, 18, 22 */
+    private static final List<Integer> TIMEPOINTS = Arrays.asList(2, 6, 10, 14, 18, 22);
+
+    /** 血压时间点：7 */
+    private static final List<Integer> XYTIMEPOINTS = Arrays.asList(7);
+
     public static List<Date> getDatesFormNow(Date start) throws ParseException {
         /*  22 */
         String startTime = DateUtil.format(start, "yyyy-MM-dd");
@@ -138,36 +145,22 @@ public class DateUtils {
     }
 
     public static Boolean isEqual(Date time, Boolean isIBP) {
-        /*  98 */
         if (time == null) {
-            /*  99 */
             return Boolean.valueOf(false);
         }
-        /* 101 */
         Calendar cal = Calendar.getInstance();
-        /* 102 */
         cal.setTime(time);
-        /* 103 */
         if (cal.get(12) != 0 || cal.get(13) != 0 || cal.get(14) != 0) {
-            /* 104 */
             return Boolean.valueOf(false);
         }
-        /* 106 */
         if (isIBP.booleanValue()) {
-            /* 107 */
-            if (MyConfig.XYTIMEPOINTS.contains(Integer.valueOf(cal.get(11)))) {
-                /* 108 */
+            if (XYTIMEPOINTS.contains(Integer.valueOf(cal.get(11)))) {
                 return Boolean.valueOf(true);
             }
-        }
-        /* 111 */
-        else if (MyConfig.TIMEPOINTS.contains(Integer.valueOf(cal.get(11)))) {
-            /* 112 */
+        } else if (TIMEPOINTS.contains(Integer.valueOf(cal.get(11)))) {
             return Boolean.valueOf(true);
         }
 
-
-        /* 116 */
         return Boolean.valueOf(false);
     }
 

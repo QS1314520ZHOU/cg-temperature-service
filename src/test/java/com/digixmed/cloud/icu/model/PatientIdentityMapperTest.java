@@ -69,24 +69,24 @@ class PatientIdentityMapperTest {
 
     @Test
     void testGetPatientIdFallback() {
-        // 测试patientId降级
+        // 测试patientId - 当mrn不存在时返回null
         Document patient = new Document()
                 .append("hisPid", "HIS001")
                 .append("name", "张三");
 
-        // 当mrn不存在时，降级到hisPid
-        assertEquals("HIS001", mapper.getPatientId(patient));
+        // 当mrn不存在时，返回null（不降级到hisPid）
+        assertNull(mapper.getPatientId(patient));
     }
 
     @Test
     void testGetMrnFallback() {
-        // 测试mrn降级
+        // 测试mrn - 当hisPid不存在时返回null
         Document patient = new Document()
                 .append("mrn", "MRN001")
                 .append("name", "张三");
 
-        // 当hisPid不存在时，降级到mrn
-        assertEquals("MRN001", mapper.getMrn(patient));
+        // 当hisPid不存在时，返回null（不降级到mrn）
+        assertNull(mapper.getMrn(patient));
     }
 
     @Test

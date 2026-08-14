@@ -2,7 +2,6 @@ package com.digixmed.cloud.icu.util;
 
 import cn.hutool.core.date.DateUnit;
 import cn.hutool.core.date.DateUtil;
-import com.digixmed.cloud.icu.service.common.MyConfig;
 
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
@@ -350,7 +349,7 @@ public class DataUtils {
 
     public static Date getNextTimePoint(Date time) {
         /* 256 */
-        Date oclock = DateUtils.getTimeByOclock(time, Integer.valueOf(MyConfig.TIMPOINTASD));
+        Date oclock = DateUtils.getTimeByOclock(time, Integer.valueOf(7));
         /* 257 */
         if (oclock.before(time)) {
             /* 258 */

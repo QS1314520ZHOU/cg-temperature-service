@@ -274,6 +274,64 @@ public class IntermediateService {
         return (int) result.getModifiedCount();
     }
 
+    // ==================== Recheck methods ====================
+
+    /**
+     * Update recheck value when a recheck temperature is found.
+     * Sets vitalsignNVal2 to the recheck value and marks the record as completed.
+     *
+     * @param id                 the document _id (as string)
+     * @param recheckValue       the recheck temperature value
+     * @param attempts           current attempt count
+     * @param recheckRequired    whether recheck was required
+     * @param recheckCompleted   whether recheck is completed
+     */
+    public void updateRecheckValue(String id, String recheckValue, int attempts,
+                                   boolean recheckRequired, boolean recheckCompleted) {
+        Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(id)));
+        Update update = new Update()
+                .set("vitalsignNVal2", recheckValue)
+                .set("recheckAttempts", attempts)
+                .set("recheckRequired", recheckRequired)
+                .set("recheckCompleted", recheckCompleted)
+                .set("status", "PENDING")  // Reset to PENDING for re-push
+                .set("updatedAt", new Date());
+        mongoTemplate.updateFirst(query, update, COLLECTION);
+    }
+
+    /**
+     * Update recheck progress (increment attempt count, no value found yet).
+     *
+     * @param id        the document _id (as string)
+     * @param attempts  current attempt count
+     */
+    public void updateRecheckProgress(String id, int attempts) {
+        Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(id)));
+        Update update = new Update()
+                .set("recheckAttempts", attempts)
+                .set("updatedAt", new Date());
+        mongoTemplate.updateFirst(query, update, COLLECTION);
+    }
+
+    /**
+     * Update recheck final result (window closed or max attempts reached).
+     *
+     * @param id                 the document _id (as string)
+     * @param attempts           final attempt count
+     * @param recheckRequired    whether recheck was required
+     * @param recheckCompleted   whether recheck found a value
+     */
+    public void updateRecheckResult(String id, int attempts, boolean recheckRequired,
+                                    boolean recheckCompleted) {
+        Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(id)));
+        Update update = new Update()
+                .set("recheckAttempts", attempts)
+                .set("recheckRequired", recheckRequired)
+                .set("recheckCompleted", recheckCompleted)
+                .set("updatedAt", new Date());
+        mongoTemplate.updateFirst(query, update, COLLECTION);
+    }
+
     // ==================== Internal helpers ====================
 
     /**

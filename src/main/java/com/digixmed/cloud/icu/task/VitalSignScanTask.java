@@ -140,6 +140,7 @@ public class VitalSignScanTask {
                 }
 
                 // 入科时间点扫描：回传入科时的生命体征数据（体温、脉搏、心率、呼吸、疼痛评分）
+                log.info("ADMISSION_VITALS_CHECK traceId={} pid={} 准备执行入科扫描", traceId, pid);
                 processAdmissionVitalSigns(pid, patient, traceId);
             }
 
@@ -453,9 +454,14 @@ public class VitalSignScanTask {
                     .and("time").gte(startTime).lt(endTime)
                     .and("valid").is(true));
 
-            log.info("STEP_03_QUERY traceId={} pid={} code={} 查询条件: {}", patientTraceId, pid, sourceCode, query);
+            log.info("STEP_03_QUERY traceId={} pid={} code={} 查询条件: pid={}, code={}, time=[{}, {}), valid=true",
+                    patientTraceId, pid, sourceCode, pid, sourceCode, startTime, endTime);
 
             Document bedside = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (bedside == null) {
+                log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
+                return;
+            }
             if (bedside == null) {
                 log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
                 return;

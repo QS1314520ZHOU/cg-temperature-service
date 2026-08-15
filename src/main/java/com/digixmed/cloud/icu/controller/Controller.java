@@ -181,7 +181,7 @@ public class Controller {
             currentDate = currentDate.plusDays(1);
         }
 
-        // ========== 2.1 入科时间点扫描（只扫描入科当天，只有生命体征）==========
+        // ========== 2.1 入科时间点扫描（入科当天，生命体征+身高体重）==========
         Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", Date.class);
         if (icuAdmissionTime != null) {
             LocalDateTime admissionDateTime = icuAdmissionTime.toInstant()
@@ -200,6 +200,7 @@ public class Controller {
                 LocalDateTime admissionPlanTime = LocalDateTime.of(admissionDate, LocalTime.of(vitalHour, 0, 0));
                 ClinicalTimeWindow admissionWindow = timeWindowService.buildVitalPointWindow(admissionDate, vitalHour);
 
+                // 生命体征
                 Map<String, Object> admissionResult = processTimePoint(pid, patient, admissionPlanTime, admissionWindow, traceId);
                 admissionResult.put("date", admissionDate.toString());
                 admissionResult.put("hour", vitalHour);
@@ -210,6 +211,27 @@ public class Controller {
                 totalInserted += (int) admissionResult.getOrDefault("inserted", 0);
                 totalSkipped += (int) admissionResult.getOrDefault("skipped", 0);
                 totalFailed += (int) admissionResult.getOrDefault("failed", 0);
+
+                // 身高体重
+                try {
+                    VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, traceId);
+                    if (heightPayload != null) {
+                        String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
+                        if ("INSERT".equals(action)) totalInserted++;
+                        else if ("SKIP".equals(action)) totalSkipped++;
+                        log.info("MANUAL_SCAN traceId={} 入科身高处理完成 action={}", traceId, action);
+                    }
+                    VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, traceId);
+                    if (weightPayload != null) {
+                        String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
+                        if ("INSERT".equals(action)) totalInserted++;
+                        else if ("SKIP".equals(action)) totalSkipped++;
+                        log.info("MANUAL_SCAN traceId={} 入科体重处理完成 action={}", traceId, action);
+                    }
+                } catch (Exception e) {
+                    totalFailed++;
+                    log.error("MANUAL_SCAN traceId={} 入科身高体重处理异常", traceId, e);
+                }
 
                 log.info("MANUAL_SCAN traceId={} 入科时间点扫描完成 admissionDate={} vitalHour={}", traceId, admissionDate, vitalHour);
             }

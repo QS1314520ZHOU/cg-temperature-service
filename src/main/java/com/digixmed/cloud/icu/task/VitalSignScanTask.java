@@ -92,6 +92,8 @@ public class VitalSignScanTask {
     private BloodPressureHandler bloodPressureHandler;
     @Autowired
     private PainScoreHandler painScoreHandler;
+    @Autowired
+    private HeightWeightHandler heightWeightHandler;
 
     /**
      * 执行普通体征扫描
@@ -267,7 +269,7 @@ public class VitalSignScanTask {
             log.info("ADMISSION_VITALS traceId={} mongoPid={} patientId={} 入科时间={} 扫描窗口=[{}, {})",
                     patientTraceId, pid, patientIdMasked, admissionDateTime, window.getStart(), window.getEnd());
 
-            // 只处理生命体征，不处理血压
+            // 处理生命体征（不处理血压）
             processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
                     "param_T", temperatureHandler, window);
             processPulseWithFallback(traceId, patientTraceId, pid, patient, admissionPlanTime, window);
@@ -277,6 +279,22 @@ public class VitalSignScanTask {
                     "param_resp", breathHandler, window);
             processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
                     "param_tengTong_score", painScoreHandler, window);
+
+            // 处理身高体重
+            try {
+                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, patientTraceId);
+                if (heightPayload != null) {
+                    intermediateService.upsertPending(heightPayload, patientTraceId);
+                    log.info("ADMISSION_VITALS traceId={} pid={} 身高处理成功", patientTraceId, pid);
+                }
+                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, patientTraceId);
+                if (weightPayload != null) {
+                    intermediateService.upsertPending(weightPayload, patientTraceId);
+                    log.info("ADMISSION_VITALS traceId={} pid={} 体重处理成功", patientTraceId, pid);
+                }
+            } catch (Exception e) {
+                log.error("ADMISSION_VITALS traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
+            }
 
             log.info("ADMISSION_VITALS traceId={} pid={} 入科时间点扫描完成", patientTraceId, pid);
         } catch (Exception e) {

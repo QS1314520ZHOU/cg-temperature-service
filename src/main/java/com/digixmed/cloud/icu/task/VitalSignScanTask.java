@@ -231,7 +231,7 @@ public class VitalSignScanTask {
         // 获取入科时间
         java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
         if (icuAdmissionTime == null) {
-            log.debug("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
+            log.info("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
             return;
         }
 
@@ -241,8 +241,10 @@ public class VitalSignScanTask {
 
         // 只扫描当天入科的患者（避免扫描历史入科数据）
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        log.info("ADMISSION_VITALS traceId={} pid={} 入科时间={} 入科日期={} 今天={}", traceId, pid, admissionDateTime, admissionDate, today);
+
         if (!admissionDate.equals(today)) {
-            log.debug("ADMISSION_VITALS traceId={} pid={} 入科日期={} 非今天，跳过", traceId, pid, admissionDate);
+            log.info("ADMISSION_VITALS traceId={} pid={} 入科日期={} 非今天，跳过", traceId, pid, admissionDate);
             return;
         }
 

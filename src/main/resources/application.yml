@@ -26,10 +26,25 @@ vitalsign:
     max-retry-count: 3
     max-request-body-length: 4000
     max-response-body-length: 2000
+  # 普通体征扫描配置
+  scan:
+    # 回看窗口（小时）：生成需要扫描的标准时间点，覆盖护士事后补录场景
+    # 26 小时可覆盖"凌晨补昨晚 22:00"，按需调大
+    lookback-hours: ${VITALSIGN_SCAN_LOOKBACK_HOURS:26}
+    # 血压 07:00 槽位回看天数
+    bp-lookback-days: ${VITALSIGN_SCAN_BP_LOOKBACK_DAYS:1}
+    # 入科首条回传回看天数
+    admission-lookback-days: ${VITALSIGN_SCAN_ADMISSION_LOOKBACK_DAYS:1}
   # 体温复测巡检配置
   recheck:
     # 复测巡检回望窗口（小时），默认 24 小时；可用环境变量 VITALSIGN_RECHECK_LOOKBACK_HOURS 覆盖
     lookback-hours: ${VITALSIGN_RECHECK_LOOKBACK_HOURS:24}
+  # 每日汇总配置
+  summary:
+    # 汇总扫描频率：不再一天只跑一次，保证 07:00 之后补录的数据也能回传
+    cron: ${VITALSIGN_SUMMARY_CRON:0 5/15 * * * ?}
+    # 汇总回看天数（报表日）
+    lookback-days: ${VITALSIGN_SUMMARY_LOOKBACK_DAYS:1}
   patient:
     patient-id-source: ${VITALSIGN_PATIENT_ID_SOURCE:mrn}
     mrn-source: ${VITALSIGN_MRN_SOURCE:hisPid}

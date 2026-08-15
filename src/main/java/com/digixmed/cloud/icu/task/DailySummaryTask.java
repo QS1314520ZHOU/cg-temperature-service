@@ -6,7 +6,10 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
+import com.digixmed.cloud.icu.service.HeightWeightNurseService;
+import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
+import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import com.digixmed.cloud.icu.model.InpatientDTO;
 import org.bson.Document;
@@ -60,6 +63,14 @@ public class DailySummaryTask {
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
 
+    /** 汇总扫描频率 */
+    @Value("${vitalsign.summary.cron:0 0 7 * * ?}")
+    private String summaryCron;
+
+    /** 汇总回看天数（报表日） */
+    @Value("${vitalsign.summary.lookback-days:1}")
+    private int summaryLookbackDays;
+
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
 
@@ -74,6 +85,9 @@ public class DailySummaryTask {
 
     @Autowired
     private IntermediateService intermediateService;
+
+    @Autowired
+    private HeightWeightNurseService heightWeightNurseService;
 
     @Autowired
     private StoolCountHandler stoolCountHandler;
@@ -111,27 +125,35 @@ public class DailySummaryTask {
     /**
      * 执行每日汇总
      */
-    @Scheduled(cron = "0 0 7 * * ?")
+    @Scheduled(cron = "${vitalsign.summary.cron:0 0 7 * * ?}")
     public void execute() {
         String traceId = TraceIdGenerator.generate();
-        log.info("STEP_01_PATIENT_SELECTED traceId={} 开始每日07:00汇总", traceId);
+        LocalDateTime now = timeWindowService.now();
+        log.info("STEP_01_PATIENT_SELECTED traceId={} 开始每日汇总 now={}", traceId, now);
 
         try {
-            LocalDate today = LocalDate.now();
-            ClinicalTimeWindow window = timeWindowService.buildDailyWindow(today);
-            log.info("STEP_02_WINDOW_CREATED traceId={} 统计窗口={}", traceId, window);
+            // 获取需要处理的报表日列表（含回看）
+            List<LocalDate> reportDates = timeWindowService.getSummaryReportDates(now, summaryLookbackDays);
+            log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}天，需处理报表日数量={} 日期={}",
+                    traceId, summaryLookbackDays, reportDates.size(), reportDates);
 
-            // 准入原则：不再查金仓在科患者列表，只看 bedside 是否有数据 + patient 集合中是否存在该 _id
-            List<String> pids = findCandidatePids(window, traceId);
-            log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, pids.size());
+            for (LocalDate reportDate : reportDates) {
+                ClinicalTimeWindow window = timeWindowService.buildDailyWindow(reportDate);
+                log.info("STEP_02_WINDOW_CREATED traceId={} 报表日={} 统计窗口=[{}, {})",
+                        traceId, reportDate, window.getStart(), window.getEnd());
 
-            for (String pid : pids) {
-                Document patient = findMongoPatientByPid(pid);
-                if (patient == null) {
-                    log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
-                    continue;
+                // 准入原则：不再查金仓在科患者列表，只看 bedside 是否有数据 + patient 集合中是否存在该 _id
+                List<String> pids = findCandidatePids(window, traceId);
+                log.info("STEP_01_PATIENT_SELECTED traceId={} 报表日={} 候选患者数量={}", traceId, reportDate, pids.size());
+
+                for (String pid : pids) {
+                    Document patient = findMongoPatientByPid(pid);
+                    if (patient == null) {
+                        log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
+                        continue;
+                    }
+                    processPatientSummary(pid, patient, window, reportDate, traceId);
                 }
-                processPatientSummary(pid, patient, window, today, traceId);
             }
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总完成", traceId);
@@ -141,7 +163,7 @@ public class DailySummaryTask {
     }
 
     private void processPatientSummary(String pid, Document patient, ClinicalTimeWindow window,
-                                        LocalDate today, String parentTraceId) {
+                                        LocalDate reportDate, String parentTraceId) {
         String hisPatientId = getValueFromDocByKey(patient, "mrn", String.class);
         String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
         String patientIdMasked = maskPatientId(hisPatientId);
@@ -183,14 +205,19 @@ public class DailySummaryTask {
             processNetUltrafiltration(records, patient, pid, window, patientTraceId);
 
             // 身高体重（检查是否需要发送）
-            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, today, patient)) {
+            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, reportDate, patient)) {
                 LocalDateTime sendTime = window.getReportDate();
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, sendTime, patientTraceId);
+                NurseRef nurse = heightWeightNurseService.resolve(pid);
+                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
+                        patient, sendTime, nurse, patientTraceId);
                 if (heightPayload != null) {
+                    PayloadTimeNormalizer.anchor(heightPayload, sendTime);
                     intermediateService.upsertPending(heightPayload, patientTraceId);
                 }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, sendTime, patientTraceId);
+                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(
+                        patient, sendTime, nurse, patientTraceId);
                 if (weightPayload != null) {
+                    PayloadTimeNormalizer.anchor(weightPayload, sendTime);
                     intermediateService.upsertPending(weightPayload, patientTraceId);
                 }
             }

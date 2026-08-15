@@ -12,7 +12,6 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
@@ -20,20 +19,28 @@ import java.util.Date;
 /**
  * 血压处理器
  *
- * 业务目的：处理血压体征，显式成对处理收缩压和舒张压
+ * 业务目的：血压只回传每天 07:00 槽位的数据，收缩压与舒张压必须成对
  * 源数据：param_nibp_s.strVal（收缩压）, param_nibp_d.strVal（舒张压）
  * 输出：vitalsignName=血压, vitalsignType=1005, unit=mmHg
  *
+ * 时间窗口：由调用方传入的 planTime 直接决定，窗口 = [planTime, planTime+1小时)，
+ *          planTime 固定为某一天的 07:00。
+ *          原实现在 handler 内部用 "planTime.getHour() < 7 就查前一天" 自行推断日期，
+ *          与 VitalSignScanTask 里的同款逻辑重复且容易不一致，现统一由任务层决定槽位日期。
+ *
+ * 补录支持：护士忙完后补写 07:00 那一格，bedside.time 仍是 07:00，
+ *          由任务层周期性重扫该槽位即可命中，幂等键不变。
+ *
  * 规则：
- *   - 同一患者、同一业务时间窗口必须同时存在收缩压和舒张压
- *   - 如果只存在一个值：不发送不完整血压，记录WARN
- *   - reasonCode=INCOMPLETE_BLOOD_PRESSURE
+ *   - 只存在收缩压或只存在舒张压 → 不回传，记录WARN，reasonCode=INCOMPLETE_BLOOD_PRESSURE
+ *   - 等另一半补齐后重扫会自动回传
  */
 @Component
 public class BloodPressureHandler extends BaseVitalSignHandler {
 
     private static final String SYSTOLIC_CODE = "param_nibp_s";
     private static final String DIASTOLIC_CODE = "param_nibp_d";
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -53,32 +60,25 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
             log.warn("STEP_04 traceId={} 患者pid为空", traceId);
             return null;
         }
-
-        // 血压只传每天7点的数据
-        // 构建7点的时间窗口: [07:00, 08:00)
-        LocalDate today = planTime.toLocalDate();
-        Date startTime = Date.from(today.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date endTime = Date.from(today.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-
-        // 如果当前时间早于7点，则查询前一天7点的数据
-        if (planTime.getHour() < 7) {
-            LocalDate yesterday = today.minusDays(1);
-            startTime = Date.from(yesterday.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            endTime = Date.from(yesterday.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        if (planTime == null) {
+            log.warn("STEP_04 traceId={} pid={} 血压planTime为空", traceId, maskPid(pid));
+            return null;
         }
 
-        // 查询收缩压
+        // 窗口固定为 [planTime, planTime+1h)，planTime 由任务层给定为某天的 07:00
+        ClinicalTimeWindow window = timeWindowService.buildSevenAmWindow(planTime.toLocalDate());
+        Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+        Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
         Document systolicDoc = findRecordByCode(pid, startTime, endTime, SYSTOLIC_CODE);
-        // 查询舒张压
         Document diastolicDoc = findRecordByCode(pid, startTime, endTime, DIASTOLIC_CODE);
 
-        log.info("STEP_04_BP_QUERY traceId={} pid={} 查询血压: startTime={}, endTime={}, systolicDoc={}, diastolicDoc={}",
-                traceId, maskPid(pid), startTime, endTime, systolicDoc != null ? "found" : "null", diastolicDoc != null ? "found" : "null");
+        log.info("STEP_04_BP_QUERY traceId={} pid={} 查询血压窗口=[{}, {}) systolic={} diastolic={}",
+                traceId, maskPid(pid), window.getStart(), window.getEnd(),
+                systolicDoc != null ? "found" : "null", diastolicDoc != null ? "found" : "null");
 
         String systolic = systolicDoc != null ? getValueFromDocByKey(systolicDoc, "strVal", String.class) : null;
         String diastolic = diastolicDoc != null ? getValueFromDocByKey(diastolicDoc, "strVal", String.class) : null;
-
-        log.info("STEP_04_BP_VALUES traceId={} pid={} 收缩压={}, 舒张压={}", traceId, maskPid(pid), systolic, diastolic);
 
         BloodPressurePair pair = BloodPressurePair.builder()
                 .systolic(systolic)
@@ -87,21 +87,20 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
                 .diastolicRecord(diastolicDoc)
                 .build();
 
-        // 检查完整性
         if (!pair.isComplete()) {
             log.warn("STEP_05_VALUE_PARSED traceId={} pid={} 不完整血压: systolic={}, diastolic={} reasonCode=INCOMPLETE_BLOOD_PRESSURE",
                     traceId, maskPid(pid), systolic, diastolic);
             return null;
         }
 
-        // 检查有效性
         if (!pair.isValid()) {
             log.warn("STEP_05_VALUE_PARSED traceId={} pid={} 无效血压值: {}/{} reasonCode=INVALID_BLOOD_PRESSURE",
                     traceId, maskPid(pid), systolic, diastolic);
             return null;
         }
 
-        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 血压={}/{}", traceId, maskPid(pid), systolic, diastolic);
+        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 血压={}/{}",
+                traceId, maskPid(pid), systolic, diastolic);
 
         VitalSignPayload payload = VitalSignPayload.builder()
                 .vitalsignName("血压")
@@ -111,20 +110,22 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
                 .unit("mmHg")
                 .build();
 
-        // 使用收缩压记录的 bedside.time
+        // recordTime 取收缩压记录的 bedside.time；planTime 由任务层用 PayloadTimeNormalizer 锚定为 07:00
         fillCommonFields(payload, patient, systolicDoc, mongoTemplate, traceId);
         return payload;
     }
 
     /**
      * 按code查询指定时间窗口内的记录
-     * 使用业务时间窗口而非精确时间匹配
+     * valid ne false：兼容历史数据缺失 valid 字段的情况，同时排除已作废记录
      */
     private Document findRecordByCode(String pid, Date startTime, Date endTime, String code) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(code)
+                .and("valid").ne(false)
                 .and("time").gte(startTime).lt(endTime)
-        ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
+        ).with(org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
                 .limit(1);
 
         return mongoTemplate.findOne(query, Document.class, "bedside");

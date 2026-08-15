@@ -4,16 +4,18 @@ import com.digixmed.cloud.icu.handler.*;
 import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
-import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
+import com.digixmed.cloud.icu.service.HeightWeightNurseService;
+import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
+import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
-import com.digixmed.cloud.icu.model.InpatientDTO;
 import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -26,49 +28,68 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * 普通体征扫描任务
  *
- * 业务目的：定时扫描在科患者的普通体征数据（体温、脉搏、心率、呼吸、血压、疼痛评分）
- * 输入：KingbaseES在科患者列表、MongoDB bedside记录
- * 输出：IntermediateTable记录（status=PENDING）
- * 调度时间：每小时执行一次
+ * 采集范围：
+ *   - 生命体征（体温/脉搏/心率/呼吸/疼痛评分）：只取 02:00、06:00、10:00、14:00、18:00、22:00 六个标准时间点；
+ *   - 血压：只取每天 07:00 槽位；
+ *   - 入科第一条：入科时刻所属标准点的生命体征 + 身高体重。
  *
- * 关键流程：
- *   1. 获取当前标准时间点
- *   2. 从Kingbase查询在科患者
- *   3. 对每个患者，查询对应的bedside记录
- *   4. 调用对应Handler处理
- *   5. 保存到中间表（不直接调用HTTP推送）
+ * 补录处理：
+ *   每轮扫描不只看"当前标准点"，而是回看 vitalsign.scan.lookback-hours 小时内的所有标准点
+ *   （默认 26 小时，可跨天）。护士抢救结束后才补写 06:00 的体温时，bedside.time 仍是 06:00，
+ *   本任务后续任意一轮都会重新扫到，并交给 IntermediateService.upsertPending 判定：
+ *     - 从未回传过 → 新建 PENDING 回传；
+ *     - 回传过且 payloadHash 一致且已 SUCCESS → 跳过，不重复回传；
+ *     - 回传过但值发生变化 → 更新记录并重置 PENDING，重新回传。
  *
- * 职责分离：
- *   - 本任务只负责采集和计算数据
- *   - 只写入中间表PENDING状态
- *   - 不进行HTTP/SOAP请求
- *   - 推送由PushTask负责
+ * 时间锚定：
+ *   payload.planTime 统一锚定为标准时间点（PayloadTimeNormalizer），
+ *   bedside.time 落在 recordTime。这样同一格子无论被补录/修改几次，幂等键都不变。
+ *
+ * 职责分离：本任务只采集并写中间表 PENDING，不发起任何 HTTP/SOAP 请求，推送由 PushTask 负责。
  */
 @Component
 public class VitalSignScanTask {
 
     private static final Logger log = LoggerFactory.getLogger(VitalSignScanTask.class);
 
-    /** 病区编码，改为配置项，避免与其他模块硬编码不一致 */
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    private static final String BEDSIDE = "bedside";
+
+    /** 脉搏代码优先级（param_脉搏优先，避免重复处理） */
+    private static final List<String> PULSE_CODES = Arrays.asList("param_脉搏", "param_PR");
+
+    /** 生命体征来源 code */
+    private static final String CODE_TEMPERATURE = "param_T";
+    private static final String CODE_HEART_RATE = "param_HR";
+    private static final String CODE_BREATH = "param_resp";
+    private static final String CODE_PAIN = "param_tengTong_score";
+    private static final String CODE_SYSTOLIC = "param_nibp_s";
+
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
 
-    /**
-     * 脉搏代码优先级（param_脉搏优先，避免重复处理）
-     */
-    private static final List<String> PULSE_CODES = Arrays.asList("param_脉搏", "param_PR");
+    /** 标准时间点回看小时数，覆盖跨天补录 */
+    @Value("${vitalsign.scan.lookback-hours:26}")
+    private int scanLookbackHours;
+
+    /** 血压 07:00 槽位回看天数 */
+    @Value("${vitalsign.scan.bp-lookback-days:1}")
+    private int bpLookbackDays;
+
+    /** 入科首条回传回看天数 */
+    @Value("${vitalsign.scan.admission-lookback-days:1}")
+    private int admissionLookbackDays;
 
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
-
-    @Autowired
-    private InpatientRepository inpatientRepository;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -79,7 +100,9 @@ public class VitalSignScanTask {
     @Autowired
     private IntermediateService intermediateService;
 
-    // 普通体征Handlers
+    @Autowired
+    private HeightWeightNurseService heightWeightNurseService;
+
     @Autowired
     private TemperatureHandler temperatureHandler;
     @Autowired
@@ -95,62 +118,50 @@ public class VitalSignScanTask {
     @Autowired
     private HeightWeightHandler heightWeightHandler;
 
-    /**
-     * 执行普通体征扫描
-     *
-     * 扫描逻辑：根据当前时间，扫描当前时间点及之前可能补录的时间点
-     * 例如当前10:00，扫描 02:00、06:00、10:00 三个时间点的窗口
-     * 通过 upsertPending 的幂等机制处理：相同数据跳过，不同数据重新回传
-     */
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
         String traceId = TraceIdGenerator.generate();
-        log.info("STEP_01_PATIENT_SELECTED traceId={} 开始普通体征扫描", traceId);
+        LocalDateTime now = timeWindowService.now();
+        log.info("STEP_01_PATIENT_SELECTED traceId={} 开始普通体征扫描 now={}", traceId, now);
 
         try {
-            // 获取当前标准时间点
-            LocalDateTime currentVitalPoint = timeWindowService.getCurrentVitalPoint();
-            log.info("STEP_02_WINDOW_CREATED traceId={} 当前标准时间点={}", traceId, currentVitalPoint);
-
-            // 获取需要扫描的时间点列表（当前时间点 + 之前可能补录的时间点）
-            List<LocalDateTime> scanPoints = getScanTimePoints(currentVitalPoint);
-            log.info("STEP_02_WINDOW_CREATED traceId={} 需要扫描的时间点数量={} 时间点={}",
-                    traceId, scanPoints.size(), scanPoints);
+            List<LocalDateTime> scanPoints = timeWindowService.getScanTimePoints(now, scanLookbackHours);
+            log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}小时，需扫描标准时间点数量={} 时间点={}",
+                    traceId, scanLookbackHours, scanPoints.size(), scanPoints);
 
             // 收集所有时间点窗口内的候选患者（去重）
-            java.util.Set<String> allPids = new java.util.LinkedHashSet<>();
+            Set<String> allPids = new LinkedHashSet<>();
             for (LocalDateTime point : scanPoints) {
                 ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
                         point.toLocalDate(), point.getHour());
-                List<String> pids = findCandidatePids(window, traceId);
-                allPids.addAll(pids);
+                if (window == null) {
+                    continue;
+                }
+                allPids.addAll(findCandidatePids(window, traceId));
             }
-
             log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, allPids.size());
 
-            // 对每个患者，处理所有时间点
             for (String pid : allPids) {
                 Document patient = findMongoPatientByPid(pid);
                 if (patient == null) {
                     log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
                     continue;
                 }
+
                 for (LocalDateTime point : scanPoints) {
                     ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
                             point.toLocalDate(), point.getHour());
-                    processPatientByPid(pid, patient, point, window, traceId);
+                    if (window != null) {
+                        processPatientByPid(pid, patient, point, window, traceId);
+                    }
                 }
 
-                // 入科时间点扫描：回传入科时的生命体征数据（体温、脉搏、心率、呼吸、疼痛评分）
-                log.info("ADMISSION_VITALS_CHECK traceId={} pid={} 准备执行入科扫描", traceId, pid);
-                processAdmissionVitalSigns(pid, patient, traceId);
+                // 入科第一条：生命体征 + 身高体重
+                processAdmissionVitalSigns(pid, patient, now, traceId);
             }
 
-            // 血压：直接从 bedside 表查询有8点数据的患者（不依赖在科列表）
-            // 窗口[07:00,08:00)在 8 点后才完整，因此从 10 点标准时间点起执行（幂等键相同，重复执行不会重复推送）
-            if (currentVitalPoint.getHour() >= 10) {
-                processBloodPressureFromBedside(traceId, currentVitalPoint);
-            }
+            // 血压：只取 07:00 槽位，按回看天数逐日扫描
+            processBloodPressureSlots(now, traceId);
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描完成", traceId);
         } catch (Exception e) {
@@ -158,243 +169,256 @@ public class VitalSignScanTask {
         }
     }
 
-    /**
-     * 获取需要扫描的时间点列表
-     * 根据当前时间点，返回当前及之前的所有标准时间点（用于补录数据扫描）
-     *
-     * 例如：
-     * - 当前10:00 → [02:00, 06:00, 10:00]
-     * - 当前14:00 → [02:00, 06:00, 10:00, 14:00]
-     * - 当前02:00 → [02:00]（只扫当天02:00）
-     *
-     * @param currentVitalPoint 当前标准时间点
-     * @return 需要扫描的时间点列表（按时间顺序）
-     */
-    private List<LocalDateTime> getScanTimePoints(LocalDateTime currentVitalPoint) {
-        List<LocalDateTime> points = new ArrayList<>();
-        LocalDate date = currentVitalPoint.toLocalDate();
-        int currentHour = currentVitalPoint.getHour();
-
-        // 标准时间点：02, 06, 10, 14, 18, 22
-        List<Integer> vitalHours = timeWindowService.getVitalSignHours();
-
-        for (int hour : vitalHours) {
-            if (hour <= currentHour) {
-                points.add(LocalDateTime.of(date, java.time.LocalTime.of(hour, 0, 0)));
-            }
-        }
-
-        // 如果当前时间点是列表中的第一个（02:00），只返回它自己
-        // 不需要扫描前一天的时间点（那些已经在前一天扫描过了）
-        return points;
-    }
-
     private void processPatientByPid(String pid, Document patient, LocalDateTime planTime,
-                                      ClinicalTimeWindow window, String traceId) {
+                                     ClinicalTimeWindow window, String traceId) {
         String patientId = patientIdentityMapper.getPatientId(patient);
         String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
         String patientIdMasked = maskPatientId(patientId);
 
         try {
-            log.info("STEP_01_PATIENT_MATCHED traceId={} mongoPid={} patientId={}", patientTraceId, pid, patientIdMasked);
+            log.info("STEP_01_PATIENT_MATCHED traceId={} mongoPid={} patientId={} 时间点={}",
+                    patientTraceId, pid, patientIdMasked, planTime);
 
-            // 处理体温
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_T", temperatureHandler, window);
-
-            // 处理脉搏：param_脉搏 优先，缺失时回退 param_PR（只处理一次，原实现会重复 upsert）
-            processPulseWithFallback(traceId, patientTraceId, pid, patient, planTime, window);
-
-            // 处理心率
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_HR", heartRateHandler, window);
-
-            // 处理呼吸
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_resp", breathHandler, window);
-
-            // 处理疼痛评分
-            processVitalSign(traceId, patientTraceId, pid, patient, planTime,
-                    "param_tengTong_score", painScoreHandler, window);
-
+            processVitalSign(patientTraceId, pid, patient, planTime, CODE_TEMPERATURE, temperatureHandler, window);
+            processPulseWithFallback(patientTraceId, pid, patient, planTime, window);
+            processVitalSign(patientTraceId, pid, patient, planTime, CODE_HEART_RATE, heartRateHandler, window);
+            processVitalSign(patientTraceId, pid, patient, planTime, CODE_BREATH, breathHandler, window);
+            processVitalSign(patientTraceId, pid, patient, planTime, CODE_PAIN, painScoreHandler, window);
         } catch (Exception e) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} patientId={} 处理异常", patientTraceId, patientIdMasked, e);
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} patientId={} 处理异常",
+                    patientTraceId, patientIdMasked, e);
         }
     }
 
     /**
-     * 入科时间点扫描：回传入科时的生命体征数据
-     * 只处理生命体征（体温、脉搏、心率、呼吸、疼痛评分），不处理血压
+     * 入科第一条回传：入科时刻所属标准点的生命体征 + 身高体重
      *
-     * @param pid MongoDB患者ObjectId
-     * @param patient patient文档
-     * @param traceId 追踪ID
+     * 身高体重的记录者必须与本次体温的记录者一致，因此：
+     *   1. 先处理体温并拿到 payload；
+     *   2. 用体温 payload 的记录者调用 HeightWeightNurseService.pin 原子锁定；
+     *   3. 用锁定结果构建身高体重。
+     * 若本次没有体温记录，则不回传身高体重（等体温出现后的下一轮再一起回传），
+     * 以保证"身高体重的记录者与对应体温一致"这一约束不被破坏。
+     *
+     * 入科标准点的取法：
+     *   入科时刻本身就是标准点 → 取其自身；否则取上一个标准点。
+     *   原实现用 "hours.filter(h <= admissionHour).max().orElse(2)"，
+     *   在 00:00-01:59 入科时会错误落到当天 02:00，而该窗口 [02:00,06:00) 并不包含入科时刻。
      */
-    private void processAdmissionVitalSigns(String pid, Document patient, String traceId) {
-        // 获取入科时间
-        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
+    private void processAdmissionVitalSigns(String pid, Document patient, LocalDateTime now, String traceId) {
+        Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", Date.class);
         if (icuAdmissionTime == null) {
-            log.info("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
+            log.debug("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
             return;
         }
 
-        LocalDateTime admissionDateTime = icuAdmissionTime.toInstant()
-                .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+        LocalDateTime admissionDateTime = icuAdmissionTime.toInstant().atZone(ZONE).toLocalDateTime();
         LocalDate admissionDate = admissionDateTime.toLocalDate();
+        LocalDate earliest = now.toLocalDate().minusDays(Math.max(admissionLookbackDays, 0));
 
-        // 只扫描当天入科的患者（避免扫描历史入科数据）
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
-        log.info("ADMISSION_VITALS traceId={} pid={} 入科时间={} 入科日期={} 今天={}", traceId, pid, admissionDateTime, admissionDate, today);
-
-        if (!admissionDate.equals(today)) {
-            log.info("ADMISSION_VITALS traceId={} pid={} 入科日期={} 非今天，跳过", traceId, pid, admissionDate);
+        if (admissionDate.isBefore(earliest) || admissionDate.isAfter(now.toLocalDate())) {
+            log.debug("ADMISSION_VITALS traceId={} pid={} 入科日期={} 不在回看范围内，跳过", traceId, pid, admissionDate);
             return;
         }
 
-        // 使用入科时间所在的标准时间点窗口
-        int admissionHour = admissionDateTime.getHour();
-        int vitalHour = timeWindowService.getVitalSignHours().stream()
-                .filter(h -> h <= admissionHour)
-                .max(Integer::compareTo)
-                .orElse(2); // 默认02:00
-
-        LocalDateTime admissionPlanTime = LocalDateTime.of(admissionDate, java.time.LocalTime.of(vitalHour, 0, 0));
-        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(admissionDate, vitalHour);
+        // 入科时刻所属标准点
+        LocalDateTime admissionPlanTime = timeWindowService.getCurrentVitalPoint(admissionDateTime);
+        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
+                admissionPlanTime.toLocalDate(), admissionPlanTime.getHour());
+        if (window == null) {
+            return;
+        }
 
         String patientId = patientIdentityMapper.getPatientId(patient);
         String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
         String patientIdMasked = maskPatientId(patientId);
 
+        log.info("ADMISSION_VITALS traceId={} mongoPid={} patientId={} 入科时间={} 标准点={} 窗口=[{}, {})",
+                patientTraceId, pid, patientIdMasked, admissionDateTime, admissionPlanTime,
+                window.getStart(), window.getEnd());
+
+        // 1. 先处理体温，拿到记录者
+        VitalSignPayload tempPayload = processVitalSignAndGetPayload(
+                patientTraceId, pid, patient, admissionPlanTime, CODE_TEMPERATURE, temperatureHandler, window);
+
+        // 2. 锁定记录者
+        String nurseId = tempPayload != null ? tempPayload.getRecordNurseId() : null;
+        String nurseName = tempPayload != null ? tempPayload.getRecordNurseName() : null;
+        NurseRef nurse = heightWeightNurseService.pin(pid, nurseId, nurseName, "ADMISSION");
+
+        // 3. 处理其他生命体征
+        processPulseWithFallback(patientTraceId, pid, patient, admissionPlanTime, window);
+        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_HEART_RATE, heartRateHandler, window);
+        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_BREATH, breathHandler, window);
+        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_PAIN, painScoreHandler, window);
+
+        // 4. 身高体重（用锁定的记录者）
         try {
-            log.info("ADMISSION_VITALS traceId={} mongoPid={} patientId={} 入科时间={} 扫描窗口=[{}, {})",
-                    patientTraceId, pid, patientIdMasked, admissionDateTime, window.getStart(), window.getEnd());
+            VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
+                    patient, admissionPlanTime, nurse, patientTraceId);
+            if (heightPayload != null) {
+                PayloadTimeNormalizer.anchor(heightPayload, admissionPlanTime);
+                intermediateService.upsertPending(heightPayload, patientTraceId);
+                log.info("ADMISSION_VITALS traceId={} pid={} 身高处理完成 nurse={}", patientTraceId, pid, nurse.getName());
+            }
+            VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(
+                    patient, admissionPlanTime, nurse, patientTraceId);
+            if (weightPayload != null) {
+                PayloadTimeNormalizer.anchor(weightPayload, admissionPlanTime);
+                intermediateService.upsertPending(weightPayload, patientTraceId);
+                log.info("ADMISSION_VITALS traceId={} pid={} 体重处理完成 nurse={}", patientTraceId, pid, nurse.getName());
+            }
+        } catch (Exception e) {
+            log.error("ADMISSION_VITALS traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
+        }
 
-            // 处理生命体征（不处理血压）
-            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
-                    "param_T", temperatureHandler, window);
-            processPulseWithFallback(traceId, patientTraceId, pid, patient, admissionPlanTime, window);
-            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
-                    "param_HR", heartRateHandler, window);
-            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
-                    "param_resp", breathHandler, window);
-            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
-                    "param_tengTong_score", painScoreHandler, window);
+        log.info("ADMISSION_VITALS traceId={} pid={} 入科时间点扫描完成", patientTraceId, pid);
+    }
 
-            // 处理身高体重
-            try {
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, patientTraceId);
-                if (heightPayload != null) {
-                    intermediateService.upsertPending(heightPayload, patientTraceId);
-                    log.info("ADMISSION_VITALS traceId={} pid={} 身高处理成功", patientTraceId, pid);
-                }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, patientTraceId);
-                if (weightPayload != null) {
-                    intermediateService.upsertPending(weightPayload, patientTraceId);
-                    log.info("ADMISSION_VITALS traceId={} pid={} 体重处理成功", patientTraceId, pid);
-                }
-            } catch (Exception e) {
-                log.error("ADMISSION_VITALS traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
+    /**
+     * 血压只取 07:00 槽位，按回看天数逐日扫描
+     */
+    private void processBloodPressureSlots(LocalDateTime now, String traceId) {
+        LocalDate today = now.toLocalDate();
+        int days = Math.max(bpLookbackDays, 0);
+        for (int i = days; i >= 0; i--) {
+            LocalDate slotDate = today.minusDays(i);
+            LocalDateTime slotTime = LocalDateTime.of(slotDate, java.time.LocalTime.of(7, 0, 0));
+            if (now.isBefore(slotTime)) {
+                continue;
             }
 
-            log.info("ADMISSION_VITALS traceId={} pid={} 入科时间点扫描完成", patientTraceId, pid);
-        } catch (Exception e) {
-            log.error("ADMISSION_VITALS traceId={} pid={} 入科扫描异常", patientTraceId, pid, e);
+            // 收集该日 07:00 槽位有收缩压数据的 pid
+            ClinicalTimeWindow window = timeWindowService.buildSevenAmWindow(slotDate);
+            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
+            Query query = new Query(Criteria.where("code").is(CODE_SYSTOLIC)
+                    .and("valid").ne(false)
+                    .and("time").gte(startTime).lt(endTime));
+            List<Document> systolicRecords = mongoTemplate.find(query, Document.class, BEDSIDE);
+
+            Set<String> pids = systolicRecords.stream()
+                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
+                    .filter(p -> p != null && !p.isEmpty())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+
+            log.info("STEP_BP traceId={} 日期={} 07:00槽位收缩压患者数量={}", traceId, slotDate, pids.size());
+
+            for (String pid : pids) {
+                Document patient = findMongoPatientByPid(pid);
+                if (patient == null) {
+                    continue;
+                }
+                String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
+                VitalSignPayload payload = bloodPressureHandler.handle(null, patient, slotTime, patientTraceId);
+                if (payload != null) {
+                    PayloadTimeNormalizer.anchor(payload, slotTime);
+                    intermediateService.upsertPending(payload, patientTraceId);
+                    log.info("STEP_BP traceId={} pid={} 日期={} 血压处理完成", patientTraceId, pid, slotDate);
+                }
+            }
         }
     }
 
-    /**
-     * 处理脉搏，支持param_脉搏和param_PR fallback
-     */
-    private void processPulseWithFallback(String parentTraceId, String patientTraceId, String pid,
+    private void processPulseWithFallback(String patientTraceId, String pid,
                                            Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
         try {
-            Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
-            // 先查询param_脉搏
-            Query query = new Query(Criteria.where("pid").is(pid)
-                    .and("code").is("param_脉搏")
-                    .and("time").gte(startTime).lt(endTime));
-
-            Document bedside = mongoTemplate.findOne(query, Document.class, "bedside");
-
-            // 如果没有param_脉搏，尝试param_PR
-            if (bedside == null) {
-                query = new Query(Criteria.where("pid").is(pid)
-                        .and("code").is("param_PR")
+            Document bedside = null;
+            for (String code : PULSE_CODES) {
+                Query query = new Query(Criteria.where("pid").is(pid)
+                        .and("code").is(code)
+                        .and("valid").ne(false)
                         .and("time").gte(startTime).lt(endTime));
-                bedside = mongoTemplate.findOne(query, Document.class, "bedside");
+                bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+                if (bedside != null) {
+                    break;
+                }
             }
 
             if (bedside != null) {
                 VitalSignPayload payload = pulseHandler.handle(bedside, patient, planTime, patientTraceId);
                 if (payload != null) {
+                    PayloadTimeNormalizer.anchor(payload, planTime);
                     intermediateService.upsertPending(payload, patientTraceId);
                 }
             }
         } catch (Exception e) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 脉搏处理异常",
-                    patientTraceId, pid, e);
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 脉搏处理异常", patientTraceId, pid, e);
+        }
+    }
+
+    private void processVitalSign(String patientTraceId, String pid, Document patient,
+                                   LocalDateTime planTime, String sourceCode,
+                                   BaseVitalSignHandler handler, ClinicalTimeWindow window) {
+        try {
+            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
+            log.info("STEP_03_QUERY traceId={} pid={} code={} 窗口=[{}, {})",
+                    patientTraceId, pid, sourceCode, window.getStart(), window.getEnd());
+
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(sourceCode)
+                    .and("valid").ne(false)
+                    .and("time").gte(startTime).lt(endTime));
+
+            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+            if (bedside == null) {
+                log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
+                return;
+            }
+
+            log.info("STEP_03_QUERY traceId={} pid={} code={} 找到bedside记录: time={}, strVal={}",
+                    patientTraceId, pid, sourceCode, bedside.get("time"), bedside.get("strVal"));
+
+            VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
+            if (payload != null) {
+                PayloadTimeNormalizer.anchor(payload, planTime);
+                intermediateService.upsertPending(payload, patientTraceId);
+                log.info("STEP_07 traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
+            } else {
+                log.info("STEP_07 traceId={} pid={} code={} handler返回null", patientTraceId, pid, sourceCode);
+            }
+        } catch (Exception e) {
+            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
         }
     }
 
     /**
-     * 直接从 bedside 表查询有8点血压数据的患者并处理
-     * 不依赖 KingbaseES 在科患者列表
+     * 处理生命体征并返回 payload（用于入科扫描获取体温记录者）
      */
-    private void processBloodPressureFromBedside(String traceId, LocalDateTime planTime) {
-        log.info("STEP_BP_DIRECT traceId={} 开始直接从bedside查询血压数据", traceId);
-
+    private VitalSignPayload processVitalSignAndGetPayload(String patientTraceId, String pid, Document patient,
+                                                            LocalDateTime planTime, String sourceCode,
+                                                            BaseVitalSignHandler handler, ClinicalTimeWindow window) {
         try {
-            // 构建7点的时间窗口
-            LocalDate today = planTime.toLocalDate();
-            Date startTime = Date.from(today.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            Date endTime = Date.from(today.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
-            // 如果当前时间早于7点，则查询前一天7点的数据
-            if (planTime.getHour() < 7) {
-                LocalDate yesterday = today.minusDays(1);
-                startTime = Date.from(yesterday.atTime(7, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-                endTime = Date.from(yesterday.atTime(8, 0, 0).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            }
-
-            // 查询8点有收缩压数据的所有 pid
-            Query query = new Query(Criteria.where("code").is("param_nibp_s")
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(sourceCode)
+                    .and("valid").ne(false)
                     .and("time").gte(startTime).lt(endTime));
-            List<Document> systolicRecords = mongoTemplate.find(query, Document.class, "bedside");
 
-            // 去重获取所有 pid
-            List<String> pids = systolicRecords.stream()
-                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
-                    .filter(pid -> pid != null)
-                    .distinct()
-                    .collect(Collectors.toList());
-
-            log.info("STEP_BP_DIRECT traceId={} 查询到{}个患者有8点收缩压数据", traceId, pids.size());
-
-            for (String pid : pids) {
-                try {
-                    // 查询 patient 文档
-                    Document patient = findMongoPatientByPid(pid);
-                    if (patient == null) {
-                        log.warn("STEP_BP_DIRECT traceId={} pid={} 未找到patient文档", traceId, pid);
-                        continue;
-                    }
-
-                    String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
-
-                    // 调用 BloodPressureHandler
-                    VitalSignPayload payload = bloodPressureHandler.handle(null, patient, planTime, patientTraceId);
-                    if (payload != null) {
-                        intermediateService.upsertPending(payload, patientTraceId);
-                        log.info("STEP_BP_DIRECT traceId={} pid={} 血压处理成功", traceId, pid);
-                    }
-                } catch (Exception e) {
-                    log.error("STEP_BP_DIRECT traceId={} pid={} 血压处理异常", traceId, pid, e);
-                }
+            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+            if (bedside == null) {
+                log.info("ADMISSION_VITALS traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
+                return null;
             }
+
+            VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
+            if (payload != null) {
+                PayloadTimeNormalizer.anchor(payload, planTime);
+                intermediateService.upsertPending(payload, patientTraceId);
+                log.info("ADMISSION_VITALS traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
+            }
+            return payload;
         } catch (Exception e) {
-            log.error("STEP_BP_DIRECT traceId={} 直接查询血压异常", traceId, e);
+            log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
+            return null;
         }
     }
 
@@ -404,19 +428,20 @@ public class VitalSignScanTask {
      */
     private List<String> findCandidatePids(ClinicalTimeWindow window, String traceId) {
         try {
-            Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
             List<String> codes = new ArrayList<>(PULSE_CODES);
-            codes.add("param_T");
-            codes.add("param_HR");
-            codes.add("param_resp");
-            codes.add("param_tengTong_score");
+            codes.add(CODE_TEMPERATURE);
+            codes.add(CODE_HEART_RATE);
+            codes.add(CODE_BREATH);
+            codes.add(CODE_PAIN);
 
             Query query = new Query(Criteria.where("code").in(codes)
+                    .and("valid").ne(false)
                     .and("time").gte(startTime).lt(endTime));
             query.fields().include("pid");
-            List<Document> docs = mongoTemplate.find(query, Document.class, "bedside");
+            List<Document> docs = mongoTemplate.find(query, Document.class, BEDSIDE);
 
             List<String> pids = docs.stream()
                     .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
@@ -441,7 +466,6 @@ public class VitalSignScanTask {
             Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(pid)));
             return mongoTemplate.findOne(query, Document.class, "patient");
         } catch (Exception e) {
-            // pid 可能不是 ObjectId 格式，尝试其他方式
             log.warn("findMongoPatientByPid pid={} 查询异常: {}", pid, e.getMessage());
             return null;
         }
@@ -452,66 +476,6 @@ public class VitalSignScanTask {
         Object value = doc.get(key);
         if (value == null) return null;
         return clazz.cast(value);
-    }
-
-    private void processVitalSign(String parentTraceId, String patientTraceId, String pid,
-                                   Document patient, LocalDateTime planTime,
-                                   String sourceCode, BaseVitalSignHandler handler,
-                                   ClinicalTimeWindow window) {
-        try {
-            LocalDateTime startLdt = window.getStart();
-            LocalDateTime endLdt = window.getEnd();
-            Date startTime = Date.from(startLdt.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-            Date endTime = Date.from(endLdt.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-
-            log.info("STEP_03_QUERY traceId={} pid={} code={} 查询bedside: startLdt={}, endLdt={}, startTime={}, endTime={}",
-                    patientTraceId, pid, sourceCode, startLdt, endLdt, startTime, endTime);
-
-            Query query = new Query(Criteria.where("pid").is(pid)
-                    .and("code").is(sourceCode)
-                    .and("time").gte(startTime).lt(endTime)
-                    .and("valid").is(true));
-
-            log.info("STEP_03_QUERY traceId={} pid={} code={} 查询条件: pid={}, code={}, time=[{}, {}), valid=true",
-                    patientTraceId, pid, sourceCode, pid, sourceCode, startTime, endTime);
-
-            Document bedside = mongoTemplate.findOne(query, Document.class, "bedside");
-            if (bedside == null) {
-                log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
-                return;
-            }
-            if (bedside == null) {
-                log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
-                return;
-            }
-
-            log.info("STEP_03_QUERY traceId={} pid={} code={} 找到bedside记录: time={}, strVal={}", patientTraceId, pid, sourceCode, bedside.get("time"), bedside.get("strVal"));
-
-            VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, patientTraceId);
-                log.info("STEP_07 traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
-            } else {
-                log.info("STEP_07 traceId={} pid={} code={} handler返回null", patientTraceId, pid, sourceCode);
-            }
-        } catch (Exception e) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} code={} 处理异常",
-                    patientTraceId, pid, sourceCode, e);
-        }
-    }
-
-    private Document findMongoPatient(String patientId) {
-        // 通过mrn或hisPid查询（OR逻辑）
-        Query query = new Query(new Criteria().orOperator(
-                Criteria.where("mrn").is(patientId),
-                Criteria.where("hisPid").is(patientId)
-        ));
-        return mongoTemplate.findOne(query, Document.class, "patient");
-    }
-
-    private String getMongoPid(Document patient) {
-        Object id = patient.get("_id");
-        return id != null ? id.toString() : null;
     }
 
     private String maskPatientId(String patientId) {

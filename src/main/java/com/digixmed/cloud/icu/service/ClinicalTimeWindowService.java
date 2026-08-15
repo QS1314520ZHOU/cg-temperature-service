@@ -9,23 +9,23 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * 临床时间窗口服务
  *
  * 业务目的：统一管理所有时间窗口的计算逻辑
- * 输入：日期、小时数、窗口类型
- * 输出：ClinicalTimeWindow对象
  * 时间边界：
  *   - 普通体征时间点：02:00, 06:00, 10:00, 14:00, 18:00, 22:00
+ *   - 血压 / 大便次数：只取 07:00 槽位，窗口 [07:00, 08:00)
  *   - 每日汇总窗口：[前一天07:00, 当天07:00)
  *   - 体温复测窗口：[标准时间点, 标准时间点+1小时)
- * 异常策略：参数非法时记录ERROR日志并返回null
  *
  * 关键规则：
  *   1. 所有窗口必须采用左闭右开 [start, end)
@@ -38,69 +38,50 @@ public class ClinicalTimeWindowService {
 
     private static final Logger log = LoggerFactory.getLogger(ClinicalTimeWindowService.class);
 
-    /**
-     * 普通体征标准时间点（小时）
-     */
+    /** 普通体征标准时间点（小时） */
     private static final List<Integer> VITAL_SIGN_HOURS = Arrays.asList(2, 6, 10, 14, 18, 22);
 
-    /**
-     * 每日汇总归档时间（小时）
-     */
+    /** 每日汇总归档时间（小时）；血压与大便次数同样只取该槽位 */
     private static final int DAILY_SUMMARY_HOUR = 7;
 
-    /**
-     * 体温复测窗口长度（小时）
-     */
+    /** 体温复测窗口长度（小时） */
     private static final long TEMPERATURE_RECHECK_HOURS = 1;
 
-    /**
-     * 身高体重分页天数
-     */
+    /** 身高体重分页天数 */
     private static final int HEIGHT_WEIGHT_PAGE_DAYS = 7;
 
-    /**
-     * 时区
-     */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
-    /**
-     * 时钟（可注入，用于测试）
-     */
     private Clock clock;
 
     public ClinicalTimeWindowService() {
         this.clock = Clock.system(ZONE_SHANGHAI);
     }
 
+    public LocalDateTime now() {
+        return LocalDateTime.now(clock);
+    }
+
+    public LocalDate today() {
+        return LocalDate.now(clock);
+    }
+
     /**
      * 构建指定日期和小时的体征时间点
-     * 业务目的：确定某个标准时间点的 LocalDateTime
-     *
-     * @param date 日期
-     * @param hour 小时（2,6,10,14,18,22）
-     * @return 标准时间点
      */
     public LocalDateTime buildVitalPoint(LocalDate date, int hour) {
         if (!VITAL_SIGN_HOURS.contains(hour)) {
             log.error("STEP_01_INVALID_HOUR hour={} 无效，有效值为{}", hour, VITAL_SIGN_HOURS);
             return null;
         }
-        return LocalDateTime.of(date, java.time.LocalTime.of(hour, 0, 0));
+        return LocalDateTime.of(date, LocalTime.of(hour, 0, 0));
     }
 
     /**
-     * 构建每日汇总统计窗口
-     * 业务目的：确定每日汇总的时间范围 [前一天07:00, 当天07:00)
-     *
-     * 例如：2026-08-08 07:00 生成的数据，其统计窗口为：
-     *   start = 2026-08-07 07:00:00
-     *   end   = 2026-08-08 07:00:00
-     *
-     * @param reportDate 报表日期（当天）
-     * @return 每日汇总时间窗口
+     * 构建每日汇总统计窗口 [前一天07:00, 当天07:00)
      */
     public ClinicalTimeWindow buildDailyWindow(LocalDate reportDate) {
-        LocalDateTime reportTime = LocalDateTime.of(reportDate, java.time.LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+        LocalDateTime reportTime = LocalDateTime.of(reportDate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
         LocalDateTime windowStart = reportTime.minusDays(1);
         return ClinicalTimeWindow.builder()
                 .start(windowStart)
@@ -111,23 +92,31 @@ public class ClinicalTimeWindowService {
     }
 
     /**
-     * 构建指定时间点的体征时间窗口
-     * 业务目的：确定某个标准时间点的数据归属窗口
+     * 构建 07:00 槽位窗口 [07:00, 08:00)
      *
-     * 窗口逻辑：
-     *   当前标准时间点N → [N, N+下一个时间点)
-     *   例如 02:00 → [02:00, 06:00)
-     *
-     * @param date 日期
-     * @param hour 小时（2,6,10,14,18,22）
-     * @return 体征时间窗口
+     * 业务用途：血压、大便次数都只取 07:00 这一格的数据。
+     * 之所以是 [07:00, 08:00) 而不是 [06:00, 07:00)：
+     *   bedside.time 存的是护理记录单的"格子时间"，07:00 那一格的记录 time 就等于 07:00，
+     *   左闭右开取 [06:00,07:00) 会把 07:00 整点这条正好排除掉，导致一条都查不到。
+     */
+    public ClinicalTimeWindow buildSevenAmWindow(LocalDate date) {
+        LocalDateTime start = LocalDateTime.of(date, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+        return ClinicalTimeWindow.builder()
+                .start(start)
+                .end(start.plusHours(1))
+                .type(WindowType.DAILY_SUMMARY)
+                .reportDate(start)
+                .build();
+    }
+
+    /**
+     * 构建指定时间点的体征时间窗口，例如 02:00 → [02:00, 06:00)
      */
     public ClinicalTimeWindow buildVitalPointWindow(LocalDate date, int hour) {
         LocalDateTime point = buildVitalPoint(date, hour);
         if (point == null) {
             return null;
         }
-        // getNextVitalPoint 已处理跨天（22:00 -> 次日02:00），不会返回 null
         LocalDateTime nextPoint = getNextVitalPoint(point);
         return ClinicalTimeWindow.builder()
                 .start(point)
@@ -137,14 +126,7 @@ public class ClinicalTimeWindowService {
     }
 
     /**
-     * 构建体温复测窗口
-     * 业务目的：用于查找体温>=38.5℃后的复测记录
-     *
-     * 窗口：[标准时间点, 标准时间点+1小时)
-     * 例如 02:00 → [02:00, 03:00)
-     *
-     * @param vitalPoint 标准时间点
-     * @return 体温复测窗口
+     * 构建体温复测窗口 [标准时间点, 标准时间点+1小时)
      */
     public ClinicalTimeWindow buildTemperatureRecheckWindow(LocalDateTime vitalPoint) {
         LocalDateTime windowEnd = vitalPoint.plusHours(TEMPERATURE_RECHECK_HOURS);
@@ -157,20 +139,18 @@ public class ClinicalTimeWindowService {
 
     /**
      * 构建身高体重发送窗口（7天分页）
-     * 业务目的：判断某个日期是否需要发送身高体重
      *
-     * 发送条件：
-     *   pageDayIndex >= 0 AND pageDayIndex % 7 == 0
-     *   pageDayIndex = DAYS.between(admissionWardDate, reportDate)
+     * 发送条件：pageDayIndex > 0 AND pageDayIndex % 7 == 0
      *
-     * @param admissionWardDate 入科日期
-     * @param reportDate 报表日期
-     * @return 身高体重窗口（如需发送），否则返回null
+     * 注意 pageDayIndex == 0（入科当天）被排除：
+     *   入科当天的身高体重由 VitalSignScanTask.processAdmissionVitalSigns 负责，
+     *   随"入科第一条生命体征"一起回传，记录者与体温一致。
+     *   若这里也放行，会因为 planTime 不同（入科标准点 vs 07:00）产生两个幂等键，重复回传两次。
      */
     public ClinicalTimeWindow buildHeightWeightWindow(LocalDate admissionWardDate, LocalDate reportDate) {
         long pageDayIndex = ChronoUnit.DAYS.between(admissionWardDate, reportDate);
-        if (pageDayIndex >= 0 && pageDayIndex % HEIGHT_WEIGHT_PAGE_DAYS == 0) {
-            LocalDateTime sendTime = LocalDateTime.of(reportDate, java.time.LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+        if (pageDayIndex > 0 && pageDayIndex % HEIGHT_WEIGHT_PAGE_DAYS == 0) {
+            LocalDateTime sendTime = LocalDateTime.of(reportDate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
             return ClinicalTimeWindow.builder()
                     .start(sendTime)
                     .end(sendTime)
@@ -181,65 +161,104 @@ public class ClinicalTimeWindowService {
         return null;
     }
 
-    /**
-     * 获取上一个标准时间点
-     *
-     * @param current 当前时间点
-     * @return 上一个标准时间点
-     */
     public LocalDateTime getPreviousVitalPoint(LocalDateTime current) {
         for (int i = VITAL_SIGN_HOURS.size() - 1; i >= 0; i--) {
-            // 按完整时间比较，避免只比小时导致 10:00 整点落错窗口
-            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(VITAL_SIGN_HOURS.get(i), 0, 0));
+            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(),
+                    LocalTime.of(VITAL_SIGN_HOURS.get(i), 0, 0));
             if (candidate.isBefore(current)) {
                 return candidate;
             }
         }
-        // 当前时间在02:00之前，上一个时间点是前一天22:00
-        return LocalDateTime.of(current.toLocalDate().minusDays(1), java.time.LocalTime.of(22, 0, 0));
+        return LocalDateTime.of(current.toLocalDate().minusDays(1), LocalTime.of(22, 0, 0));
     }
 
-    /**
-     * 获取下一个标准时间点
-     *
-     * @param current 当前时间点
-     * @return 下一个标准时间点
-     */
     public LocalDateTime getNextVitalPoint(LocalDateTime current) {
         for (int h : VITAL_SIGN_HOURS) {
-            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(), java.time.LocalTime.of(h, 0, 0));
+            LocalDateTime candidate = LocalDateTime.of(current.toLocalDate(), LocalTime.of(h, 0, 0));
             if (candidate.isAfter(current)) {
                 return candidate;
             }
         }
-        // 当前时间在22:00或之后，下一个时间点是次日02:00
-        return LocalDateTime.of(current.toLocalDate().plusDays(1), java.time.LocalTime.of(2, 0, 0));
+        return LocalDateTime.of(current.toLocalDate().plusDays(1), LocalTime.of(2, 0, 0));
     }
 
     /**
-     * 获取当前最近的标准时间点
-     *
-     * @return 当前最近的标准时间点
+     * 获取指定时刻所属的标准时间点
      */
-    public LocalDateTime getCurrentVitalPoint() {
-        LocalDateTime now = LocalDateTime.now(clock);
-        int currentHour = now.getHour();
-        // 找到当前时间所属的标准时间点
+    public LocalDateTime getCurrentVitalPoint(LocalDateTime moment) {
+        int currentHour = moment.getHour();
         for (int i = VITAL_SIGN_HOURS.size() - 1; i >= 0; i--) {
             if (currentHour >= VITAL_SIGN_HOURS.get(i)) {
-                return LocalDateTime.of(now.toLocalDate(), java.time.LocalTime.of(VITAL_SIGN_HOURS.get(i), 0, 0));
+                return LocalDateTime.of(moment.toLocalDate(), LocalTime.of(VITAL_SIGN_HOURS.get(i), 0, 0));
             }
         }
-        // 当前时间在02:00之前，标准时间点是前一天22:00
-        return LocalDateTime.of(now.toLocalDate().minusDays(1), java.time.LocalTime.of(22, 0, 0));
+        return LocalDateTime.of(moment.toLocalDate().minusDays(1), LocalTime.of(22, 0, 0));
+    }
+
+    public LocalDateTime getCurrentVitalPoint() {
+        return getCurrentVitalPoint(now());
     }
 
     /**
-     * 获取所有标准时间点（当天）
+     * 获取本轮需要扫描的标准时间点列表（含跨天回看）
      *
-     * @param date 日期
-     * @return 标准时间点列表
+     * 业务目的：护士抢救忙完之后才补写 06:00 的体温，补写时 bedside.time 仍然是 06:00，
+     *          但记录是几小时后才出现在库里。只扫"当前时间点"会永远漏掉这类补录，
+     *          因此必须周期性地把最近 lookbackHours 内的所有标准点重扫一遍。
+     *          重复扫描是安全的：upsertPending 会按幂等键比对 payloadHash，
+     *          值一致跳过、值变化才重新回传。
+     *
+     * 例：now=2026-08-15 03:20，lookbackHours=26
+     *     → [2026-08-14 02:00 ... 2026-08-14 22:00]（当前标准点为前一天22:00）
+     *
+     * @param moment        当前时刻
+     * @param lookbackHours 回看小时数，<=0 时只返回当前标准点
+     * @return 按时间升序排列的标准时间点
      */
+    public List<LocalDateTime> getScanTimePoints(LocalDateTime moment, int lookbackHours) {
+        List<LocalDateTime> points = new ArrayList<>();
+        LocalDateTime current = getCurrentVitalPoint(moment);
+        if (lookbackHours <= 0) {
+            points.add(current);
+            return points;
+        }
+
+        LocalDateTime earliest = moment.minusHours(lookbackHours);
+        LocalDateTime cursor = current;
+        // 上限保护：避免配置异常导致无限循环
+        int guard = 0;
+        while (!cursor.isBefore(earliest) && guard++ < 200) {
+            points.add(cursor);
+            cursor = getPreviousVitalPoint(cursor);
+        }
+        Collections.reverse(points);
+        return points;
+    }
+
+    /**
+     * 获取本轮需要处理的汇总报表日列表
+     *
+     * 规则：报表日 D 的归档时刻是 D 的 07:00，只有 now >= D 07:00 才允许处理；
+     *      同时向前回看 lookbackDays 天，覆盖 07:00 之后才补录的出入量/大便次数。
+     *
+     * @param moment       当前时刻
+     * @param lookbackDays 回看天数
+     * @return 按日期升序排列的报表日
+     */
+    public List<LocalDate> getSummaryReportDates(LocalDateTime moment, int lookbackDays) {
+        List<LocalDate> dates = new ArrayList<>();
+        LocalDate today = moment.toLocalDate();
+        int days = Math.max(lookbackDays, 0);
+        for (int i = days; i >= 0; i--) {
+            LocalDate candidate = today.minusDays(i);
+            LocalDateTime archiveTime = LocalDateTime.of(candidate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+            if (!moment.isBefore(archiveTime)) {
+                dates.add(candidate);
+            }
+        }
+        return dates;
+    }
+
     public List<LocalDateTime> getAllVitalPoints(LocalDate date) {
         List<LocalDateTime> points = new ArrayList<>();
         for (int hour : VITAL_SIGN_HOURS) {
@@ -248,32 +267,18 @@ public class ClinicalTimeWindowService {
         return points;
     }
 
-    /**
-     * 检查某个时间是否是标准时间点
-     *
-     * @param time 时间
-     * @return 是否是标准时间点
-     */
     public boolean isVitalPoint(LocalDateTime time) {
         return VITAL_SIGN_HOURS.contains(time.getHour()) && time.getMinute() == 0 && time.getSecond() == 0;
     }
 
-    /**
-     * 获取有效的时间点列表
-     *
-     * @return 时间点列表
-     */
     public List<Integer> getVitalSignHours() {
         return new ArrayList<>(VITAL_SIGN_HOURS);
     }
 
-    /**
-     * 检查是否应该发送身高体重
-     *
-     * @param admissionWardDate 入科日期
-     * @param reportDate 报表日期
-     * @return 是否应该发送
-     */
+    public int getDailySummaryHour() {
+        return DAILY_SUMMARY_HOUR;
+    }
+
     public boolean shouldSendHeightWeight(LocalDate admissionWardDate, LocalDate reportDate) {
         return buildHeightWeightWindow(admissionWardDate, reportDate) != null;
     }

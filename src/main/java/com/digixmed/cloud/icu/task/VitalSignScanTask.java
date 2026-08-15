@@ -241,18 +241,20 @@ public class VitalSignScanTask {
         VitalSignPayload tempPayload = processVitalSignAndGetPayload(
                 patientTraceId, pid, patient, admissionPlanTime, CODE_TEMPERATURE, temperatureHandler, window);
 
-        // 2. 锁定记录者
-        String nurseId = tempPayload != null ? tempPayload.getRecordNurseId() : null;
-        String nurseName = tempPayload != null ? tempPayload.getRecordNurseName() : null;
-        NurseRef nurse = heightWeightNurseService.pin(pid, nurseId, nurseName, "ADMISSION");
-
-        // 3. 处理其他生命体征
+        // 2. 处理其他生命体征
         processPulseWithFallback(patientTraceId, pid, patient, admissionPlanTime, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_HEART_RATE, heartRateHandler, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_BREATH, breathHandler, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_PAIN, painScoreHandler, window);
 
-        // 4. 身高体重（用锁定的记录者）
+        // 3. 身高体重（仅当本次有体温记录时才回传，否则等下一轮）
+        if (tempPayload == null) {
+            log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，跳过身高体重", patientTraceId, pid);
+            return;
+        }
+
+        // 4. 锁定记录者并处理身高体重
+        NurseRef nurse = heightWeightNurseService.pin(pid, tempPayload.getRecordNurseId(), tempPayload.getRecordNurseName(), "ADMISSION");
         try {
             VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
                     patient, admissionPlanTime, nurse, patientTraceId);
@@ -333,6 +335,7 @@ public class VitalSignScanTask {
                         .and("code").is(code)
                         .and("valid").ne(false)
                         .and("time").gte(startTime).lt(endTime));
+                query.with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
                 bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
                 if (bedside != null) {
                     break;
@@ -364,7 +367,8 @@ public class VitalSignScanTask {
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
                     .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime));
+                    .and("time").gte(startTime).lt(endTime))
+                    .with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
 
             Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
             if (bedside == null) {
@@ -401,7 +405,8 @@ public class VitalSignScanTask {
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
                     .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime));
+                    .and("time").gte(startTime).lt(endTime))
+                    .with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
 
             Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
             if (bedside == null) {
@@ -475,7 +480,9 @@ public class VitalSignScanTask {
         if (doc == null) return null;
         Object value = doc.get(key);
         if (value == null) return null;
-        return clazz.cast(value);
+        if (clazz.isInstance(value)) return clazz.cast(value);
+        if (clazz == String.class) return clazz.cast(value.toString());
+        return null;
     }
 
     private String maskPatientId(String patientId) {

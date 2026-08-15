@@ -58,6 +58,7 @@ import java.util.stream.Collectors;
 public class DailySummaryTask {
 
     private static final Logger log = LoggerFactory.getLogger(DailySummaryTask.class);
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
     /** 病区编码，与 VitalSignScanTask 统一使用同一配置项 */
     @Value("${vitalsign.patient.ward-code:125011}")
@@ -174,6 +175,7 @@ public class DailySummaryTask {
 
             // 查询窗口内所有bedside记录
             Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("valid").ne(false)
                     .and("time").gte(startDate).lt(endDate));
             List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
 
@@ -233,12 +235,14 @@ public class DailySummaryTask {
      */
     private void processStoolCount(List<Document> records, Document patient, String pid,
                                     ClinicalTimeWindow window, String traceId) {
-        // 只查07:00时间点的数据（窗口结束时间就是07:00）
-        Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date startDate = Date.from(window.getEnd().minusHours(1).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        // 大便次数窗口 [07:00, 08:00)
+        ClinicalTimeWindow stoolWindow = timeWindowService.buildSevenAmWindow(window.getReportDate());
+        Date startDate = Date.from(stoolWindow.getStart().atZone(ZONE).toInstant());
+        Date endDate = Date.from(stoolWindow.getEnd().atZone(ZONE).toInstant());
 
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_汇总大便次数")
+                .and("valid").ne(false)
                 .and("time").gte(startDate).lt(endDate));
         Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
 
@@ -246,9 +250,41 @@ public class DailySummaryTask {
             VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient,
                     window.getReportDate(), traceId);
             if (payload != null) {
+                PayloadTimeNormalizer.anchor(payload, window.getReportDate());
                 intermediateService.upsertPending(payload, traceId);
             }
         }
+    }
+
+    /**
+     * 构造虚拟 Document 并设置 time 字段，保证 handler 取到 planTime
+     */
+    private Document virtualDoc(String strVal, String code, ClinicalTimeWindow window) {
+        Document doc = new Document();
+        doc.append("strVal", strVal);
+        doc.append("code", code);
+        Date time = Date.from(window.getReportDate().atZone(ZONE).toInstant());
+        doc.append("time", time);
+        return doc;
+    }
+
+    /**
+     * 调用 handler 构建 payload 并写入队列
+     */
+    private void enqueue(DocHandler handler, Document doc, Document patient,
+                         ClinicalTimeWindow window, String traceId) {
+        VitalSignPayload payload = handler.handle(doc, patient, window.getReportDate(), traceId);
+        if (payload != null) {
+            PayloadTimeNormalizer.anchor(payload, window.getReportDate());
+            intermediateService.upsertPending(payload, traceId);
+        }
+    }
+
+    /**
+     * 安全累加
+     */
+    private BigDecimal sum(BigDecimal a, BigDecimal b) {
+        return a.add(b);
     }
 
     /**
@@ -271,14 +307,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            // 创建一个虚拟bedside记录用于handler处理
-            Document virtualDoc = new Document("strVal", total.stripTrailingZeros().toPlainString())
-                    .append("code", "param_niaoLiang");
-            VitalSignPayload payload = urineOutputHandler.handle(virtualDoc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_niaoLiang", window);
+            enqueue(urineOutputHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -321,34 +351,21 @@ public class DailySummaryTask {
 
         // 饮入量
         if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", oralTotal.stripTrailingZeros().toPlainString())
-                    .append("code", "param_kouFu");
-            VitalSignPayload payload = oralIntakeHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_kouFu", window);
+            enqueue(oralIntakeHandler, vDoc, patient, window, traceId);
         }
 
         // 治疗输入量
         if (therapyTotal.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", therapyTotal.stripTrailingZeros().toPlainString())
-                    .append("code", "param_YaoYeti_in_hour");
-            VitalSignPayload payload = therapyInputHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
+            enqueue(therapyInputHandler, vDoc, patient, window, traceId);
         }
 
         // 总输入量
-        BigDecimal totalInput = oralTotal.add(therapyTotal);
+        BigDecimal totalInput = sum(oralTotal, therapyTotal);
         if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
-            VitalSignPayload payload = totalInputHandler.buildPayload(
-                    totalInput.doubleValue(), patient, window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
+            enqueue(totalInputHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -380,11 +397,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            VitalSignPayload payload = totalOutputHandler.buildPayload(
-                    total.doubleValue(), patient, window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
+            enqueue(totalOutputHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -410,13 +424,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", total.stripTrailingZeros().toPlainString())
-                    .append("code", "param_daBianAmount");
-            VitalSignPayload payload = drainageOutputHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
+            enqueue(drainageOutputHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -438,13 +447,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", total.stripTrailingZeros().toPlainString())
-                    .append("code", "param_tube_胃肠减压");
-            VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
+            enqueue(gastricDrainageHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -469,13 +473,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", total.stripTrailingZeros().toPlainString())
-                    .append("code", "param_tube_other");
-            VitalSignPayload payload = otherDrainageHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
+            enqueue(otherDrainageHandler, vDoc, patient, window, traceId);
         }
     }
 
@@ -497,13 +496,8 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
-            Document doc = new Document("strVal", total.stripTrailingZeros().toPlainString())
-                    .append("code", "param_chaoLvLiang");
-            VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient,
-                    window.getReportDate(), traceId);
-            if (payload != null) {
-                intermediateService.upsertPending(payload, traceId);
-            }
+            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
+            enqueue(netUltrafiltrationHandler, vDoc, patient, window, traceId);
         }
     }
 

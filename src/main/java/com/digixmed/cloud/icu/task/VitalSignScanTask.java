@@ -138,6 +138,9 @@ public class VitalSignScanTask {
                             point.toLocalDate(), point.getHour());
                     processPatientByPid(pid, patient, point, window, traceId);
                 }
+
+                // 入科时间点扫描：回传入科时的生命体征数据（体温、脉搏、心率、呼吸、疼痛评分）
+                processAdmissionVitalSigns(pid, patient, traceId);
             }
 
             // 血压：直接从 bedside 表查询有8点数据的患者（不依赖在科列表）
@@ -213,6 +216,68 @@ public class VitalSignScanTask {
 
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} patientId={} 处理异常", patientTraceId, patientIdMasked, e);
+        }
+    }
+
+    /**
+     * 入科时间点扫描：回传入科时的生命体征数据
+     * 只处理生命体征（体温、脉搏、心率、呼吸、疼痛评分），不处理血压
+     *
+     * @param pid MongoDB患者ObjectId
+     * @param patient patient文档
+     * @param traceId 追踪ID
+     */
+    private void processAdmissionVitalSigns(String pid, Document patient, String traceId) {
+        // 获取入科时间
+        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
+        if (icuAdmissionTime == null) {
+            log.debug("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
+            return;
+        }
+
+        LocalDateTime admissionDateTime = icuAdmissionTime.toInstant()
+                .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+        LocalDate admissionDate = admissionDateTime.toLocalDate();
+
+        // 只扫描当天入科的患者（避免扫描历史入科数据）
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        if (!admissionDate.equals(today)) {
+            log.debug("ADMISSION_VITALS traceId={} pid={} 入科日期={} 非今天，跳过", traceId, pid, admissionDate);
+            return;
+        }
+
+        // 使用入科时间所在的标准时间点窗口
+        int admissionHour = admissionDateTime.getHour();
+        int vitalHour = timeWindowService.getVitalSignHours().stream()
+                .filter(h -> h <= admissionHour)
+                .max(Integer::compareTo)
+                .orElse(2); // 默认02:00
+
+        LocalDateTime admissionPlanTime = LocalDateTime.of(admissionDate, java.time.LocalTime.of(vitalHour, 0, 0));
+        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(admissionDate, vitalHour);
+
+        String patientId = patientIdentityMapper.getPatientId(patient);
+        String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
+        String patientIdMasked = maskPatientId(patientId);
+
+        try {
+            log.info("ADMISSION_VITALS traceId={} mongoPid={} patientId={} 入科时间={} 扫描窗口=[{}, {})",
+                    patientTraceId, pid, patientIdMasked, admissionDateTime, window.getStart(), window.getEnd());
+
+            // 只处理生命体征，不处理血压
+            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
+                    "param_T", temperatureHandler, window);
+            processPulseWithFallback(traceId, patientTraceId, pid, patient, admissionPlanTime, window);
+            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
+                    "param_HR", heartRateHandler, window);
+            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
+                    "param_resp", breathHandler, window);
+            processVitalSign(traceId, patientTraceId, pid, patient, admissionPlanTime,
+                    "param_tengTong_score", painScoreHandler, window);
+
+            log.info("ADMISSION_VITALS traceId={} pid={} 入科时间点扫描完成", patientTraceId, pid);
+        } catch (Exception e) {
+            log.error("ADMISSION_VITALS traceId={} pid={} 入科扫描异常", patientTraceId, pid, e);
         }
     }
 

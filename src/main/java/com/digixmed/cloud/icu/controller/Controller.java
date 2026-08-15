@@ -181,6 +181,40 @@ public class Controller {
             currentDate = currentDate.plusDays(1);
         }
 
+        // ========== 2.1 入科时间点扫描（只扫描入科当天，只有生命体征）==========
+        Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", Date.class);
+        if (icuAdmissionTime != null) {
+            LocalDateTime admissionDateTime = icuAdmissionTime.toInstant()
+                    .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+            LocalDate admissionDate = admissionDateTime.toLocalDate();
+
+            // 只在日期范围内且为入科当天时扫描
+            if (!admissionDate.isBefore(startDate) && !admissionDate.isAfter(endDate)) {
+                int admissionHour = admissionDateTime.getHour();
+                // 找到入科时间所在的标准时间点
+                int vitalHour = VITAL_SIGN_HOURS.stream()
+                        .filter(h -> h <= admissionHour)
+                        .max(Integer::compareTo)
+                        .orElse(2);
+
+                LocalDateTime admissionPlanTime = LocalDateTime.of(admissionDate, LocalTime.of(vitalHour, 0, 0));
+                ClinicalTimeWindow admissionWindow = timeWindowService.buildVitalPointWindow(admissionDate, vitalHour);
+
+                Map<String, Object> admissionResult = processTimePoint(pid, patient, admissionPlanTime, admissionWindow, traceId);
+                admissionResult.put("date", admissionDate.toString());
+                admissionResult.put("hour", vitalHour);
+                admissionResult.put("type", "入科体征");
+                admissionResult.put("icuAdmissionTime", admissionDateTime.toString());
+                details.add(admissionResult);
+
+                totalInserted += (int) admissionResult.getOrDefault("inserted", 0);
+                totalSkipped += (int) admissionResult.getOrDefault("skipped", 0);
+                totalFailed += (int) admissionResult.getOrDefault("failed", 0);
+
+                log.info("MANUAL_SCAN traceId={} 入科时间点扫描完成 admissionDate={} vitalHour={}", traceId, admissionDate, vitalHour);
+            }
+        }
+
         // ========== 3. 血压（07:00）==========
         LocalDate bpDate = startDate;
         while (!bpDate.isAfter(endDate)) {
@@ -664,6 +698,16 @@ public class Controller {
         } catch (NumberFormatException e) {
             return BigDecimal.ZERO;
         }
+    }
+
+    /**
+     * 从Document中安全获取指定key的值
+     */
+    private <T> T getValueFromDocByKey(Document doc, String key, Class<T> clazz) {
+        if (doc == null) return null;
+        Object value = doc.get(key);
+        if (value == null) return null;
+        return clazz.cast(value);
     }
 
     /**

@@ -257,4 +257,29 @@ public class ManualPushController {
         result.put("reset", n);
         return result;
     }
+
+    @ApiOperation(value = "手动触发全量推送",
+            notes = "立即执行一次 pushOnce，领取所有 PENDING/RETRY 记录并推送，不受 autoEnabled 开关影响")
+    @PostMapping("/pushAll")
+    public Map<String, Object> pushAll() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (!manualEnabled) {
+            result.put("success", false);
+            result.put("message", "手动接口已关闭");
+            return result;
+        }
+        String traceId = TraceIdGenerator.generate();
+        log.info("MANUAL_PUSH_ALL traceId={} 手动触发全量推送", traceId);
+        try {
+            pushTask.pushOnce(traceId);
+            result.put("success", true);
+            result.put("traceId", traceId);
+            result.put("message", "已触发一轮推送，请查看日志确认结果");
+        } catch (Exception e) {
+            log.error("MANUAL_PUSH_ALL traceId={} 推送异常", traceId, e);
+            result.put("success", false);
+            result.put("message", "推送异常：" + e.getMessage());
+        }
+        return result;
+    }
 }

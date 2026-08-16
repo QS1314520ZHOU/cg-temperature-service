@@ -27,6 +27,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -129,15 +130,16 @@ public class VitalSignScanTask {
             log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}小时，需扫描标准时间点数量={} 时间点={}",
                     traceId, scanLookbackHours, scanPoints.size(), scanPoints);
 
-            // 收集所有时间点窗口内的候选患者（去重）
+            // 收集所有精确时刻的候选患者（去重）
+            List<String> vitalCodes = new ArrayList<>(PULSE_CODES);
+            vitalCodes.add(CODE_TEMPERATURE);
+            vitalCodes.add(CODE_HEART_RATE);
+            vitalCodes.add(CODE_BREATH);
+            vitalCodes.add(CODE_PAIN);
+
             Set<String> allPids = new LinkedHashSet<>();
             for (LocalDateTime point : scanPoints) {
-                ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
-                        point.toLocalDate(), point.getHour());
-                if (window == null) {
-                    continue;
-                }
-                allPids.addAll(findCandidatePids(window, traceId));
+                allPids.addAll(findPidsAtPoint(point, vitalCodes));
             }
             log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, allPids.size());
 
@@ -287,25 +289,13 @@ public class VitalSignScanTask {
         int days = Math.max(bpLookbackDays, 0);
         for (int i = days; i >= 0; i--) {
             LocalDate slotDate = today.minusDays(i);
-            LocalDateTime slotTime = LocalDateTime.of(slotDate, java.time.LocalTime.of(7, 0, 0));
-            if (now.isBefore(slotTime)) {
+            LocalDateTime bpPoint = timeWindowService.buildSevenAmPoint(slotDate);
+            if (bpPoint == null || bpPoint.isAfter(now)) {
                 continue;
             }
 
-            // 收集该日 07:00 槽位有收缩压数据的 pid
-            ClinicalTimeWindow window = timeWindowService.buildSevenAmWindow(slotDate);
-            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
-
-            Query query = new Query(Criteria.where("code").is(CODE_SYSTOLIC)
-                    .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime));
-            List<Document> systolicRecords = mongoTemplate.find(query, Document.class, BEDSIDE);
-
-            Set<String> pids = systolicRecords.stream()
-                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
-                    .filter(p -> p != null && !p.isEmpty())
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            // 收集该日 07:00 精确时刻有收缩压数据的 pid
+            Set<String> pids = findPidsAtPoint(bpPoint, Collections.singletonList(CODE_SYSTOLIC));
 
             log.info("STEP_BP traceId={} 日期={} 07:00槽位收缩压患者数量={}", traceId, slotDate, pids.size());
 
@@ -315,9 +305,9 @@ public class VitalSignScanTask {
                     continue;
                 }
                 String patientTraceId = TraceIdGenerator.generateWithPatient(pid);
-                VitalSignPayload payload = bloodPressureHandler.handle(null, patient, slotTime, patientTraceId);
+                VitalSignPayload payload = bloodPressureHandler.handle(null, patient, bpPoint, patientTraceId);
                 if (payload != null) {
-                    PayloadTimeNormalizer.anchor(payload, slotTime);
+                    PayloadTimeNormalizer.anchor(payload, bpPoint);
                     intermediateService.upsertPending(payload, patientTraceId);
                     log.info("STEP_BP traceId={} pid={} 日期={} 血压处理完成", patientTraceId, pid, slotDate);
                 }
@@ -328,16 +318,14 @@ public class VitalSignScanTask {
     private void processPulseWithFallback(String patientTraceId, String pid,
                                            Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
         try {
-            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
-
             Document bedside = null;
             for (String code : PULSE_CODES) {
                 Query query = new Query(Criteria.where("pid").is(pid)
                         .and("code").is(code)
                         .and("valid").ne(false)
-                        .and("time").gte(startTime).lt(endTime));
-                query.with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
+                        .andOperator(exactTimeCriteria(planTime)))
+                        .with(Sort.by(Sort.Direction.DESC, "editTime"))
+                        .limit(1);
                 bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
                 if (bedside != null) {
                     break;
@@ -360,17 +348,15 @@ public class VitalSignScanTask {
                                    LocalDateTime planTime, String sourceCode,
                                    BaseVitalSignHandler handler, ClinicalTimeWindow window) {
         try {
-            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
-
-            log.info("STEP_03_QUERY traceId={} pid={} code={} 窗口=[{}, {})",
-                    patientTraceId, pid, sourceCode, window.getStart(), window.getEnd());
+            log.info("STEP_03_QUERY traceId={} pid={} code={} 精确时刻={}",
+                    patientTraceId, pid, sourceCode, planTime);
 
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
                     .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime))
-                    .with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
+                    .andOperator(exactTimeCriteria(planTime)))
+                    .with(Sort.by(Sort.Direction.DESC, "editTime"))
+                    .limit(1);
 
             Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
             if (bedside == null) {
@@ -401,14 +387,12 @@ public class VitalSignScanTask {
                                                             LocalDateTime planTime, String sourceCode,
                                                             BaseVitalSignHandler handler, ClinicalTimeWindow window) {
         try {
-            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
-
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
                     .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime))
-                    .with(Sort.by(Sort.Direction.DESC, "editTime")).limit(1);
+                    .andOperator(exactTimeCriteria(planTime)))
+                    .with(Sort.by(Sort.Direction.DESC, "editTime"))
+                    .limit(1);
 
             Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
             if (bedside == null) {
@@ -490,5 +474,26 @@ public class VitalSignScanTask {
     private String maskPatientId(String patientId) {
         if (patientId == null || patientId.length() <= 4) return "****";
         return patientId.substring(0, 2) + "****" + patientId.substring(patientId.length() - 2);
+    }
+
+    /**
+     * 精确时刻匹配条件：time == point
+     *
+     * Mongo 存的是 Date（毫秒精度），用 gte(point) + lt(point+1ms) 等价于精确相等，
+     * 比 is(point) 更稳妥——避免驱动层 Date 精度差异导致漏匹配。
+     */
+    private Criteria exactTimeCriteria(LocalDateTime point) {
+        Date start = Date.from(point.atZone(ZONE).toInstant());
+        Date end = new Date(start.getTime() + 1);
+        return Criteria.where("time").gte(start).lt(end);
+    }
+
+    /** 该标准时刻有数据的患者 pid 集合 */
+    private Set<String> findPidsAtPoint(LocalDateTime point, List<String> codes) {
+        Query query = new Query(Criteria.where("code").in(codes)
+                .and("valid").ne(false)
+                .andOperator(exactTimeCriteria(point)));
+        return new LinkedHashSet<>(
+                mongoTemplate.findDistinct(query, "pid", "bedside", String.class));
     }
 }

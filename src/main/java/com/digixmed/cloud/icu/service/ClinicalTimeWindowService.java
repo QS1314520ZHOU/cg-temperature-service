@@ -67,14 +67,24 @@ public class ClinicalTimeWindowService {
     }
 
     /**
-     * 构建指定日期和小时的体征时间点
+     * 构建指定日期和小时的体征时间点（精确时刻，用于 time 精确相等匹配）
+     *
+     * 护理单格子时间是整点写入，采集必须 time == 标准时刻，
+     * 不能用区间，否则非整点的临时测量会被误匹配。
      */
     public LocalDateTime buildVitalPoint(LocalDate date, int hour) {
-        if (!VITAL_SIGN_HOURS.contains(hour)) {
-            log.error("STEP_01_INVALID_HOUR hour={} 无效，有效值为{}", hour, VITAL_SIGN_HOURS);
+        if (date == null || !VITAL_SIGN_HOURS.contains(hour)) {
             return null;
         }
-        return LocalDateTime.of(date, LocalTime.of(hour, 0, 0));
+        return date.atTime(hour, 0, 0);
+    }
+
+    /** 07:00 精确时刻（血压 / 大便次数 / 汇总） */
+    public LocalDateTime buildSevenAmPoint(LocalDate date) {
+        if (date == null) {
+            return null;
+        }
+        return date.atTime(DAILY_SUMMARY_HOUR, 0, 0);
     }
 
     /**
@@ -200,38 +210,30 @@ public class ClinicalTimeWindowService {
     }
 
     /**
-     * 获取本轮需要扫描的标准时间点列表（含跨天回看）
+     * 回看窗口内需要扫描的标准时刻列表（倒序，最近的在前）
      *
-     * 业务目的：护士抢救忙完之后才补写 06:00 的体温，补写时 bedside.time 仍然是 06:00，
-     *          但记录是几小时后才出现在库里。只扫"当前时间点"会永远漏掉这类补录，
-     *          因此必须周期性地把最近 lookbackHours 内的所有标准点重扫一遍。
-     *          重复扫描是安全的：upsertPending 会按幂等键比对 payloadHash，
-     *          值一致跳过、值变化才重新回传。
-     *
-     * 例：now=2026-08-15 03:20，lookbackHours=26
-     *     → [2026-08-14 02:00 ... 2026-08-14 22:00]（当前标准点为前一天22:00）
-     *
-     * @param moment        当前时刻
-     * @param lookbackHours 回看小时数，<=0 时只返回当前标准点
-     * @return 按时间升序排列的标准时间点
+     * @param now           当前时间
+     * @param lookbackHours 回看小时数，覆盖护士事后补录
      */
-    public List<LocalDateTime> getScanTimePoints(LocalDateTime moment, int lookbackHours) {
+    public List<LocalDateTime> getScanTimePoints(LocalDateTime now, int lookbackHours) {
+        if (now == null || lookbackHours < 0) {
+            return Collections.emptyList();
+        }
+        LocalDateTime earliest = now.minusHours(lookbackHours);
         List<LocalDateTime> points = new ArrayList<>();
-        LocalDateTime current = getCurrentVitalPoint(moment);
-        if (lookbackHours <= 0) {
-            points.add(current);
-            return points;
-        }
 
-        LocalDateTime earliest = moment.minusHours(lookbackHours);
-        LocalDateTime cursor = current;
-        // 上限保护：避免配置异常导致无限循环
-        int guard = 0;
-        while (!cursor.isBefore(earliest) && guard++ < 200) {
-            points.add(cursor);
-            cursor = getPreviousVitalPoint(cursor);
+        LocalDate cursor = earliest.toLocalDate();
+        LocalDate last = now.toLocalDate();
+        while (!cursor.isAfter(last)) {
+            for (Integer hour : VITAL_SIGN_HOURS) {
+                LocalDateTime point = cursor.atTime(hour, 0, 0);
+                if (!point.isBefore(earliest) && !point.isAfter(now)) {
+                    points.add(point);
+                }
+            }
+            cursor = cursor.plusDays(1);
         }
-        Collections.reverse(points);
+        points.sort(Collections.reverseOrder());
         return points;
     }
 

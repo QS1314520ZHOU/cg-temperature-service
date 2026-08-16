@@ -9,6 +9,8 @@ import com.digixmed.cloud.icu.service.HeightWeightNurseService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -16,9 +18,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 /**
  * 身高体重处理器
@@ -26,7 +31,7 @@ import java.util.List;
  * 源数据：Mongo dFormData 中的 fieldDataList 数组
  * 输出：
  *   - 身高：vitalsignType=1013, unit=cm, 值放 vitalsignNVal1
- *   - 体重：vitalsignType=1014, unit=kg, 值放 vitalsignSVal1（按院方要求，NVal1 送空串占位）
+ *   - 体重：vitalsignType=1014, unit=ml, 值放 vitalsignSVal1
  *
  * 回传时机：
  *   - 入科当天（pageDayIndex=0）：由 VitalSignScanTask 的入科扫描负责，
@@ -43,19 +48,46 @@ import java.util.List;
  *      取 admission_ward_time；
  *   3. 都拿不到 → 不回传，日志记录未获取到 admission_ward_time。
  *
- * 字段优先级：身高 sg, fg；体重 tz, zt
+ * 字段优先级：身高 sg, fg；体重 zt
  */
 @Component
 public class HeightWeightHandler extends BaseVitalSignHandler {
 
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
-    private static final List<String> HEIGHT_FIELDS = Arrays.asList("sg", "fg");
-    private static final List<String> WEIGHT_FIELDS = Arrays.asList("tz", "zt");
+    /** 身高体重差异项：除这三个参数外，取数、时间、记录者、公共字段完全共用 */
+    private enum Metric {
+        HEIGHT("身高", "1013", Arrays.asList("sg", "fg"),
+                (p, v) -> p.setVitalsignNVal1(v)),
+        WEIGHT("体重", "1014", Collections.singletonList("zt"),
+                (p, v) -> p.setVitalsignSVal1(v));
+
+        private final String name;
+        private final String type;
+        private final List<String> sourceFields;
+        private final BiConsumer<VitalSignPayload, String> valueSetter;
+
+        Metric(String name, String type, List<String> sourceFields,
+               BiConsumer<VitalSignPayload, String> valueSetter) {
+            this.name = name;
+            this.type = type;
+            this.sourceFields = sourceFields;
+            this.valueSetter = valueSetter;
+        }
+    }
+
     private static final List<String> FORM_CODES = Arrays.asList(
             "ruyuanhulipinggudan",
             "zhuanruhulipinggudan"
     );
+
+    /** 身高单位 */
+    @Value("${vitalsign.height-weight.height-unit:cm}")
+    private String heightUnit;
+
+    /** 体重单位：院方口径为 ml，联调确认后可改 kg */
+    @Value("${vitalsign.height-weight.weight-unit:ml}")
+    private String weightUnit;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -79,83 +111,67 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
         return null;
     }
 
-    /**
-     * 构建身高payload
-     *
-     * @param nurse 已锁定的记录者，不允许为 null
-     */
     public VitalSignPayload buildHeightPayload(Document patient, LocalDateTime planTime,
                                                NurseRef nurse, String traceId) {
-        String pid = readPid(patient);
-        if (pid == null) {
-            return null;
-        }
+        return build(patient, planTime, nurse, traceId, Metric.HEIGHT, heightUnit);
+    }
 
-        Document formData = findValidFormData(pid);
-        if (formData == null) {
-            log.warn("STEP_04 traceId={} 未找到有效表单数据 pid={}", traceId, pid);
-            return null;
-        }
-
-        String heightValue = extractFieldFromFormData(formData, HEIGHT_FIELDS);
-        if (heightValue == null) {
-            log.warn("STEP_05_VALUE_PARSED traceId={} 无法获取身高值 pid={}", traceId, pid);
-            return null;
-        }
-
-        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 身高={}", traceId, pid, heightValue);
-
-        VitalSignPayload payload = VitalSignPayload.builder()
-                .vitalsignName("身高")
-                .vitalsignType("1013")
-                .vitalsignNVal1(heightValue)
-                .unit("cm")
-                .build();
-
-        fillCommonFields(payload, patient, planTime, traceId);
-        applyNurse(payload, nurse, pid, traceId);
-        return payload;
+    public VitalSignPayload buildWeightPayload(Document patient, LocalDateTime planTime,
+                                               NurseRef nurse, String traceId) {
+        return build(patient, planTime, nurse, traceId, Metric.WEIGHT, weightUnit);
     }
 
     /**
-     * 构建体重payload
+     * 身高体重统一构建
      *
-     * 注意：按院方要求，体重值回传在 vitalsignSVal1，
-     *      vitalsignNVal1 送空串而不是 null —— JAXB 遇到 null 会整节点省略，
-     *      对端解析时可能因缺节点报错。
+     * 取数：patient._id == dFormData.pid
+     *      且 formCode ∈ (ruyuanhulipinggudan, zhuanruhulipinggudan)
+     *      取 fieldDataList 中 field == 约定字段 的 value
+     *
+     * 差异仅三处：源字段、单位、值落到 NVal1 还是 SVal1。
+     * 其余（planTime/recordTime = 当天07:00、series=1、wardCode=125011、
+     * patientId=mrn、mrn=hisPid、remark 空、isValid=1、记录者锁定）两者完全一致。
      */
-    public VitalSignPayload buildWeightPayload(Document patient, LocalDateTime planTime,
-                                               NurseRef nurse, String traceId) {
+    private VitalSignPayload build(Document patient, LocalDateTime planTime, NurseRef nurse,
+                                   String traceId, Metric metric, String unit) {
         String pid = readPid(patient);
         if (pid == null) {
             return null;
         }
 
-        Document formData = findValidFormData(pid);
+        Document formData = findFormData(pid, traceId);
         if (formData == null) {
-            log.warn("STEP_04 traceId={} 未找到有效表单数据 pid={}", traceId, pid);
+            log.warn("STEP_04 traceId={} pid={} 未找到入院/转入护理评估单，{}不回传",
+                    traceId, pid, metric.name);
             return null;
         }
 
-        String weightValue = extractFieldFromFormData(formData, WEIGHT_FIELDS);
-        if (weightValue == null) {
-            log.warn("STEP_05_VALUE_PARSED traceId={} 无法获取体重值 pid={}", traceId, pid);
+        String value = extractFieldFromFormData(formData, metric.sourceFields);
+        if (value == null) {
+            log.warn("STEP_05_VALUE_PARSED traceId={} pid={} 评估单无{}字段或值为空 formCode={}",
+                    traceId, pid, metric.sourceFields, formData.getString("formCode"));
             return null;
         }
 
-        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 体重={}（回传于vitalsignSVal1）",
-                traceId, pid, weightValue);
+        LocalDateTime sendTime = sevenAmOf(planTime);
 
         VitalSignPayload payload = VitalSignPayload.builder()
-                .vitalsignName("体重")
-                .vitalsignType("1014")
-                .vitalsignNVal1("")
-                .vitalsignSVal1(weightValue)
-                .unit("kg")
+                .vitalsignName(metric.name)
+                .vitalsignType(metric.type)
+                .unit(unit)
                 .build();
+        metric.valueSetter.accept(payload, value);
 
-        fillCommonFields(payload, patient, planTime, traceId);
+        fillCommonFields(payload, patient, sendTime, traceId);
+        payload.setRecordTime(sendTime);
+        payload.setSeries("1");
+        payload.setWardCode("125011");
+        payload.setRemark("");
+        payload.setIsValid(1);
         applyNurse(payload, nurse, pid, traceId);
+
+        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} {}={} unit={} planTime={}",
+                traceId, pid, metric.name, value, unit, sendTime);
         return payload;
     }
 
@@ -240,15 +256,19 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
         return id != null ? id.toString() : null;
     }
 
-    private Document findValidFormData(String pid) {
+    private Document findFormData(String pid, String traceId) {
         Query query = new Query(Criteria.where("pid").is(pid)
-                .and("status").is("valid")
                 .and("formCode").in(FORM_CODES))
-                .with(org.springframework.data.domain.Sort.by(
-                        org.springframework.data.domain.Sort.Direction.DESC, "createTime"))
+                .with(Sort.by(Sort.Direction.DESC, "createTime"))
                 .limit(1);
-
         return mongoTemplate.findOne(query, Document.class, "dFormData");
+    }
+
+    /**
+     * 取 planTime 当天 07:00 作为身高体重的发送时间
+     */
+    private LocalDateTime sevenAmOf(LocalDateTime planTime) {
+        return LocalDateTime.of(planTime.toLocalDate(), LocalTime.of(7, 0));
     }
 
     @SuppressWarnings("unchecked")

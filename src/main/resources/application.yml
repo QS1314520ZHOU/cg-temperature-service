@@ -51,6 +51,10 @@ vitalsign:
     series: ${VITALSIGN_SERIES:1}
     ward-code: ${VITALSIGN_WARD_CODE:125011}
     record-nurse-id: ${VITALSIGN_RECORD_NURSE_ID:dba}
+  # 身高体重单位配置
+  height-weight:
+    height-unit: ${VITALSIGN_HEIGHT_UNIT:cm}
+    weight-unit: ${VITALSIGN_WEIGHT_UNIT:ml}
 
 digixmed:
   url: http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService

@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -243,7 +244,9 @@ public class DailySummaryTask {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_汇总大便次数")
                 .and("valid").ne(false)
-                .and("time").gte(startDate).lt(endDate));
+                .and("time").gte(startDate).lt(endDate))
+                .with(Sort.by(Sort.Direction.DESC, "editTime"))
+                .limit(1);
         Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
 
         if (stoolRecord != null) {

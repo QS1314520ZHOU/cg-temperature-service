@@ -94,11 +94,30 @@ public class PushTask {
                 }
                 handled++;
                 try {
+                    // 内容变化时需要两步推送：先发旧值(isValid=0)作废，再发新值(isValid=1)
+                    boolean needInvalidate = Boolean.TRUE.equals(record.get("invalidationNeeded"));
+                    if (needInvalidate) {
+                        Document invDoc = (Document) record.get("invalidationPayload");
+                        if (invDoc != null) {
+                            VitalSignPayload invPayload = convertDocToPayload(invDoc);
+                            if (invPayload != null) {
+                                log.info("INVALIDATION_PUSH traceId={} 先推送旧值 isValid=0 metric={} planTime={}",
+                                        traceId, invPayload.getVitalsignType(), invPayload.getPlanTime());
+                                pushService.pushInvalidation(invPayload, traceId);
+                            }
+                        }
+                        // 清除 invalidation 标记，防止重试时重复推送作废
+                        clearInvalidationFlag(record);
+                    }
+
                     VitalSignPayload payload = convertToPayload(record);
                     if (payload == null) {
                         skippedCount++;
                         updateRecordStatus(record, "DEAD", "PAYLOAD_RESTORE_FAILED", "无法恢复Payload");
                     } else {
+                        if (needInvalidate) {
+                            payload.setIsValid(1);
+                        }
                         PushService.PushResult result = pushService.push(payload, traceId);
                         switch (result) {
                             case SUCCESS:
@@ -187,6 +206,64 @@ public class PushTask {
         Object value = record.get(key);
         if (value == null) return null;
         return value.toString();
+    }
+
+    /**
+     * 从 invalidationPayload 子文档构建 Payload（旧值，用于作废推送）
+     */
+    private VitalSignPayload convertDocToPayload(Document doc) {
+        try {
+            java.time.LocalDateTime planTime = null;
+            if (doc.get("planTime") instanceof Date) {
+                planTime = ((Date) doc.get("planTime")).toInstant()
+                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+            }
+            java.time.LocalDateTime recordTime = null;
+            if (doc.get("recordTime") instanceof Date) {
+                recordTime = ((Date) doc.get("recordTime")).toInstant()
+                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+            }
+            return VitalSignPayload.builder()
+                    .vitalsignName(getStringValue(doc, "vitalsignName"))
+                    .vitalsignType(getStringValue(doc, "vitalsignType"))
+                    .vitalsignNVal1(getStringValue(doc, "vitalsignNVal1"))
+                    .vitalsignNVal2(getStringValue(doc, "vitalsignNVal2"))
+                    .vitalsignNVal3(getStringValue(doc, "vitalsignNVal3"))
+                    .vitalsignSVal1(getStringValue(doc, "vitalsignSVal1"))
+                    .vitalsignSVal2(getStringValue(doc, "vitalsignSVal2"))
+                    .patientId(getStringValue(doc, "patientId"))
+                    .mrn(getStringValue(doc, "mrn"))
+                    .patientName(getStringValue(doc, "patientName"))
+                    .series(getStringValue(doc, "series"))
+                    .wardCode(getStringValue(doc, "wardCode"))
+                    .unit(getStringValue(doc, "unit"))
+                    .remark(getStringValue(doc, "remark"))
+                    .recordNurseId(getStringValue(doc, "recordNurseId"))
+                    .recordNurseName(getStringValue(doc, "recordNurseName"))
+                    .mongoPid(getStringValue(doc, "mongoPid"))
+                    .planTime(planTime)
+                    .recordTime(recordTime != null ? recordTime : planTime)
+                    .isValid(0)
+                    .build();
+        } catch (Exception e) {
+            log.error("转换invalidationPayload失败: {}", doc, e);
+            return null;
+        }
+    }
+
+    /**
+     * 清除 invalidation 标记，防止后续重试时重复推送作废
+     */
+    private void clearInvalidationFlag(Document record) {
+        String idempotencyKey = (String) record.get("idempotencyKey");
+        if (idempotencyKey == null) return;
+        Update update = new Update()
+                .set("invalidationNeeded", false)
+                .unset("invalidationPayload")
+                .set("updatedAt", new Date());
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
+                update, COLLECTION_NAME);
     }
 
     /**

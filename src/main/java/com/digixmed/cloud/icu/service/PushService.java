@@ -496,6 +496,42 @@ public class PushService {
         return patientId.substring(0, 2) + "****" + patientId.substring(patientId.length() - 2);
     }
 
+    /**
+     * 直接推送作废报文（isValid=0），跳过幂等检查和状态管理
+     * 用于内容变化时先发送旧值作废，再由正常 push 流程发送新值
+     */
+    public void pushInvalidation(VitalSignPayload payload, String traceId) {
+        String patientIdMasked = maskPatientId(payload.getPatientId());
+        log.info("INVALIDATION_PUSH traceId={} patient={} metric={} planTime={} isValid=0 开始推送作废报文",
+                traceId, patientIdMasked, payload.getVitalsignType(), payload.getPlanTime());
+
+        String dataXml = buildDataXml(payload);
+        String requestXml = DataUtils.getRequestStr(dataXml);
+        if (requestXml == null || requestXml.trim().isEmpty()) {
+            log.warn("INVALIDATION_PUSH traceId={} 作废报文为空，跳过", traceId);
+            return;
+        }
+
+        try {
+            Map<String, String> response = HttpUtils.doPost(pushProperties.getUrl(), requestXml);
+            String responseCode = response.get("code");
+            String responseMsg = response.get("msg");
+            log.info("INVALIDATION_PUSH traceId={} httpCode={} response={}", traceId, responseCode, responseMsg);
+
+            // 作废报文发送后更新队列记录的 requestMsg（记录作废报文内容）
+            String idempotencyKey = buildIdempotencyKey(payload);
+            Update update = new Update()
+                    .set("invalidationRequestMsg", requestXml)
+                    .set("invalidationResponseMsg", responseMsg)
+                    .set("invalidationSentAt", new Date());
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
+                    update, COLLECTION_NAME);
+        } catch (Exception e) {
+            log.error("INVALIDATION_PUSH traceId={} 作废报文推送异常", traceId, e);
+        }
+    }
+
     public enum PushResult {
         SUCCESS,
         RETRY,

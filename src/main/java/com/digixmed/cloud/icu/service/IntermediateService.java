@@ -121,36 +121,12 @@ public class IntermediateService {
                 return result;
             }
 
-            // 内容变化 → 先插入作废记录（isValid=0），再更新为新值（isValid=1）
+            // 内容变化 → 在记录内保存旧值（推送时先发isValid=0再发isValid=1）
             boolean contentChanged = !payloadHash.equals(existingHash);
             if (contentChanged) {
-                // 检查是否已为这个旧 hash 插入过作废记录，避免重复扫描重复插入
-                String invKey = idempotencyKey + "_INV";
-                Document invExisting = mongoTemplate.findOne(
-                        Query.query(Criteria.where("idempotencyKey").is(invKey)),
-                        Document.class, COLLECTION);
-                String oldHashAlreadyInvalidated = existing.getString("invalidatedHash");
-
-                if (invExisting == null && !payloadHash.equals(oldHashAlreadyInvalidated)) {
-                    // 插入作废记录：使用旧值 + isValid=0
-                    Document invDoc = new Document();
-                    invDoc.append("idempotencyKey", invKey);
-                    invDoc.append("traceId", traceId);
-                    invDoc.append("payloadHash", existingHash);
-                    invDoc.append("status", "PENDING");
-                    invDoc.append("retryCount", 0);
-                    invDoc.append("createdAt", now);
-                    invDoc.append("updatedAt", now);
-                    // 从 existing 复制 payload 字段，但 isValid 改为 0
-                    copyPayloadFields(existing, invDoc);
-                    invDoc.put("isValid", 0);
-                    mongoTemplate.insert(invDoc, COLLECTION);
-                    log.info("INVALIDATION_INSERTED traceId={} invKey={} 旧值作废记录已插入", traceId, invKey);
-                }
-
-                // 更新现有记录为新值 + isValid=1，标记已作废的旧 hash
+                // 保存旧值到 invalidationPayload（只在 hash 变化时更新，避免覆盖）
+                Document invPayload = buildInvalidationPayload(existing);
                 Update update = buildPayloadUpdate(payload, payloadHash, traceId);
-                update.set("isValid", 1);
                 update.set("status", "PENDING");
                 update.set("retryCount", 0);
                 update.set("nextRetryTime", null);
@@ -161,10 +137,12 @@ public class IntermediateService {
                 update.set("responseMsg", null);
                 update.set("responseBodyMasked", null);
                 update.set("sentAt", null);
-                update.set("invalidatedHash", existingHash);
+                update.set("invalidationNeeded", true);
+                update.set("invalidationPayload", invPayload);
                 update.set("updatedAt", now);
                 mongoTemplate.updateFirst(query, update, COLLECTION);
 
+                log.info("INVALIDATION_QUEUED traceId={} idempotencyKey={} 旧值已保存，推送时两步走", traceId, idempotencyKey);
                 result.put("action", "INVALIDATE_THEN_UPDATE");
                 result.put("status", "PENDING");
                 result.put("id", existing.get("_id").toString());
@@ -597,30 +575,29 @@ public class IntermediateService {
     }
 
     /**
-     * 从已有 Document 复制 payload 字段到新 Document（用于构建作废记录）
-     * 不复制 _id / idempotencyKey / traceId / payloadHash / status 等控制字段
+     * 从已有记录构建作废用的 payload 子文档（只保留推送需要的字段）
      */
-    private void copyPayloadFields(Document src, Document dst) {
-        dst.append("patientId", src.get("patientId"));
-        dst.append("mrn", src.get("mrn"));
-        dst.append("patientName", src.get("patientName"));
-        dst.append("series", src.get("series"));
-        dst.append("wardCode", src.get("wardCode"));
-        dst.append("vitalsignType", src.get("vitalsignType"));
-        dst.append("vitalsignName", src.get("vitalsignName"));
-        dst.append("unit", src.get("unit"));
-        dst.append("vitalsignNVal1", src.get("vitalsignNVal1"));
-        dst.append("vitalsignNVal2", src.get("vitalsignNVal2"));
-        dst.append("vitalsignNVal3", src.get("vitalsignNVal3"));
-        dst.append("vitalsignSVal1", src.get("vitalsignSVal1"));
-        dst.append("vitalsignSVal2", src.get("vitalsignSVal2"));
-        dst.append("remark", src.get("remark"));
-        dst.append("recordNurseId", src.get("recordNurseId"));
-        dst.append("recordNurseName", src.get("recordNurseName"));
-        dst.append("mongoPid", src.get("mongoPid"));
-        dst.append("planTime", src.get("planTime"));
-        dst.append("recordTime", src.get("recordTime"));
-        dst.append("recheckRequired", src.get("recheckRequired"));
-        dst.append("recheckCompleted", src.get("recheckCompleted"));
+    private Document buildInvalidationPayload(Document existing) {
+        Document inv = new Document();
+        inv.append("patientId", existing.get("patientId"));
+        inv.append("mrn", existing.get("mrn"));
+        inv.append("patientName", existing.get("patientName"));
+        inv.append("series", existing.get("series"));
+        inv.append("wardCode", existing.get("wardCode"));
+        inv.append("vitalsignType", existing.get("vitalsignType"));
+        inv.append("vitalsignName", existing.get("vitalsignName"));
+        inv.append("unit", existing.get("unit"));
+        inv.append("vitalsignNVal1", existing.get("vitalsignNVal1"));
+        inv.append("vitalsignNVal2", existing.get("vitalsignNVal2"));
+        inv.append("vitalsignNVal3", existing.get("vitalsignNVal3"));
+        inv.append("vitalsignSVal1", existing.get("vitalsignSVal1"));
+        inv.append("vitalsignSVal2", existing.get("vitalsignSVal2"));
+        inv.append("remark", existing.get("remark"));
+        inv.append("recordNurseId", existing.get("recordNurseId"));
+        inv.append("recordNurseName", existing.get("recordNurseName"));
+        inv.append("mongoPid", existing.get("mongoPid"));
+        inv.append("planTime", existing.get("planTime"));
+        inv.append("recordTime", existing.get("recordTime"));
+        return inv;
     }
 }

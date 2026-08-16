@@ -65,11 +65,10 @@ public class VitalSignScanTask {
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
     private static final String BEDSIDE = "bedside";
 
-    /** 脉搏代码优先级（param_脉搏优先，避免重复处理） */
-    private static final List<String> PULSE_CODES = Arrays.asList("param_脉搏", "param_PR");
-
     /** 生命体征来源 code */
     private static final String CODE_TEMPERATURE = "param_T";
+    /** 脉搏来源 code：只认 param_脉搏，不再兼容 param_PR */
+    private static final String CODE_PULSE = "param_脉搏";
     private static final String CODE_HEART_RATE = "param_HR";
     private static final String CODE_BREATH = "param_resp";
     private static final String CODE_PAIN = "param_tengTong_score";
@@ -144,11 +143,8 @@ public class VitalSignScanTask {
                     traceId, scanLookbackHours, scanPoints.size(), scanPoints);
 
             // 收集所有精确时刻的候选患者（去重）
-            List<String> vitalCodes = new ArrayList<>(PULSE_CODES);
-            vitalCodes.add(CODE_TEMPERATURE);
-            vitalCodes.add(CODE_HEART_RATE);
-            vitalCodes.add(CODE_BREATH);
-            vitalCodes.add(CODE_PAIN);
+            List<String> vitalCodes = Arrays.asList(
+                    CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH, CODE_PAIN);
 
             Set<String> allPids = new LinkedHashSet<>();
             for (LocalDateTime point : scanPoints) {
@@ -202,7 +198,7 @@ public class VitalSignScanTask {
 
         int count = 0;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_TEMPERATURE, temperatureHandler, null)) count++;
-        if (processPulseWithFallback(traceId, mongoPid, patient, point, null)) count++;
+        if (processPulse(traceId, mongoPid, patient, point, null)) count++;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_HEART_RATE, heartRateHandler, null)) count++;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_BREATH, breathHandler, null)) count++;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_PAIN, painScoreHandler, null)) count++;
@@ -220,7 +216,7 @@ public class VitalSignScanTask {
                     patientTraceId, pid, patientIdMasked, planTime);
 
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_TEMPERATURE, temperatureHandler, window);
-            processPulseWithFallback(patientTraceId, pid, patient, planTime, window);
+            processPulse(patientTraceId, pid, patient, planTime, window);
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_HEART_RATE, heartRateHandler, window);
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_BREATH, breathHandler, window);
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_PAIN, painScoreHandler, window);
@@ -308,7 +304,7 @@ public class VitalSignScanTask {
                 patientTraceId, pid, patient, admissionPlanTime, CODE_TEMPERATURE, temperatureHandler, window);
 
         // 2. 处理其他生命体征
-        processPulseWithFallback(patientTraceId, pid, patient, admissionPlanTime, window);
+        processPulse(patientTraceId, pid, patient, admissionPlanTime, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_HEART_RATE, heartRateHandler, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_BREATH, breathHandler, window);
         processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_PAIN, painScoreHandler, window);
@@ -379,35 +375,37 @@ public class VitalSignScanTask {
         }
     }
 
-    private boolean processPulseWithFallback(String patientTraceId, String pid,
-                                           Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
-        try {
-            Document bedside = null;
-            for (String code : PULSE_CODES) {
-                Query query = new Query(Criteria.where("pid").is(pid)
-                        .and("code").is(code)
-                        .and("valid").ne(false)
-                        .andOperator(exactTimeCriteria(planTime)))
-                        .with(Sort.by(Sort.Direction.DESC, "editTime"))
-                        .limit(1);
-                bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
-                if (bedside != null) {
-                    break;
-                }
-            }
+    /**
+     * 采集指定标准时刻的脉搏
+     *
+     * 只查 param_脉搏，time 必须精确等于标准时刻，取 editTime 最新的一条。
+     * 查不到即视为该时间点护士未记录脉搏，不回传。
+     *
+     * @return 是否登记了一条待推送记录
+     */
+    private boolean processPulse(String patientTraceId, String pid,
+                                 Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
+        Query query = new Query(Criteria.where("pid").is(pid)
+                .and("code").is(CODE_PULSE)
+                .and("valid").ne(false)
+                .andOperator(exactTimeCriteria(planTime)))
+                .with(Sort.by(Sort.Direction.DESC, "editTime"))
+                .limit(1);
 
-            if (bedside != null) {
-                VitalSignPayload payload = pulseHandler.handle(bedside, patient, planTime, patientTraceId);
-                if (payload != null) {
-                    PayloadTimeNormalizer.anchor(payload, planTime);
-                    intermediateService.upsertPending(payload, patientTraceId);
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 脉搏处理异常", patientTraceId, pid, e);
+        Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+        if (bedside == null) {
+            log.debug("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} point={} 无脉搏数据", patientTraceId, pid, planTime);
+            return false;
         }
-        return false;
+
+        VitalSignPayload payload = pulseHandler.handle(bedside, patient, planTime, patientTraceId);
+        if (payload == null) {
+            return false;
+        }
+
+        PayloadTimeNormalizer.anchor(payload, planTime);
+        intermediateService.upsertPending(payload, patientTraceId);
+        return true;
     }
 
     private boolean processVitalSign(String patientTraceId, String pid, Document patient,
@@ -490,11 +488,8 @@ public class VitalSignScanTask {
             Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
             Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
-            List<String> codes = new ArrayList<>(PULSE_CODES);
-            codes.add(CODE_TEMPERATURE);
-            codes.add(CODE_HEART_RATE);
-            codes.add(CODE_BREATH);
-            codes.add(CODE_PAIN);
+            List<String> codes = Arrays.asList(
+                    CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH, CODE_PAIN);
 
             Query query = new Query(Criteria.where("code").in(codes)
                     .and("valid").ne(false)

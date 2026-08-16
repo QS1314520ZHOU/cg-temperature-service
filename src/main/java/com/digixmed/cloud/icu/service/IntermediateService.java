@@ -121,9 +121,9 @@ public class IntermediateService {
                 return result;
             }
 
-            // 内容变化且之前已成功回传 → 先插入作废记录（isValid=0），再更新为新值（isValid=1）
+            // 内容变化 → 先插入作废记录（isValid=0），再更新为新值（isValid=1）
             boolean contentChanged = !payloadHash.equals(existingHash);
-            if (contentChanged && "SUCCESS".equals(existingStatus)) {
+            if (contentChanged) {
                 // 检查是否已为这个旧 hash 插入过作废记录，避免重复扫描重复插入
                 String invKey = idempotencyKey + "_INV";
                 Document invExisting = mongoTemplate.findOne(

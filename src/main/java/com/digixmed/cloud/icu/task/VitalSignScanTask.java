@@ -253,25 +253,27 @@ public class VitalSignScanTask {
             return;
         }
 
-        // 4. 锁定记录者并处理身高体重
-        NurseRef nurse = heightWeightNurseService.pin(pid, tempPayload.getRecordNurseId(), tempPayload.getRecordNurseName(), "ADMISSION");
+        // 4. 锁定记录者并处理身高体重（planTime 统一锚定入科当天 07:00，与汇总链路保持同一套幂等键规则）
+        NurseRef nurse = heightWeightNurseService.pin(pid, tempPayload.getRecordNurseId(),
+                tempPayload.getRecordNurseName(), "ADMISSION");
+        LocalDateTime hwPlanTime = admissionPlanTime.toLocalDate().atTime(7, 0);
         try {
             VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
-                    patient, admissionPlanTime, nurse, patientTraceId);
+                    patient, hwPlanTime, nurse, patientTraceId);
             if (heightPayload != null) {
-                PayloadTimeNormalizer.anchor(heightPayload, admissionPlanTime);
+                PayloadTimeNormalizer.anchor(heightPayload, hwPlanTime);
                 intermediateService.upsertPending(heightPayload, patientTraceId);
                 log.info("ADMISSION_VITALS traceId={} pid={} 身高处理完成 nurse={}", patientTraceId, pid, nurse.getName());
             }
             VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(
-                    patient, admissionPlanTime, nurse, patientTraceId);
+                    patient, hwPlanTime, nurse, patientTraceId);
             if (weightPayload != null) {
-                PayloadTimeNormalizer.anchor(weightPayload, admissionPlanTime);
+                PayloadTimeNormalizer.anchor(weightPayload, hwPlanTime);
                 intermediateService.upsertPending(weightPayload, patientTraceId);
                 log.info("ADMISSION_VITALS traceId={} pid={} 体重处理完成 nurse={}", patientTraceId, pid, nurse.getName());
             }
         } catch (Exception e) {
-            log.error("ADMISSION_VITALS traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
+            log.error("ADMISSION_HW traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
         }
 
         log.info("ADMISSION_VITALS traceId={} pid={} 入科时间点扫描完成", patientTraceId, pid);

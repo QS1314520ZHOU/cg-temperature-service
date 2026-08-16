@@ -20,6 +20,7 @@
    @Bean
    public Docket createRestApi() {
      return (new Docket(DocumentationType.OAS_30))
+       .groupName("体征服务接口")
        .apiInfo(apiInfo())
        .select()
        .apis(RequestHandlerSelectors.withMethodAnnotation(ApiOperation.class))
@@ -30,6 +31,7 @@
    @Bean
    public Docket vitalSignApi() {
      return new Docket(DocumentationType.OAS_30)
+       .groupName("手动回传测试接口")
        .apiInfo(new ApiInfoBuilder()
          .title("体征回传手动测试接口")
          .description("自动回传关闭时，通过本接口按患者+日期+时间点精准触发回传")

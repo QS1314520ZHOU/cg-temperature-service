@@ -236,7 +236,7 @@ public class ManualPushController {
         return result;
     }
 
-    @ApiOperation(value = "重置队列记录为待推送", notes = "把指定 mrn 的 SUCCESS/DEAD 记录改回 PENDING，用于重复联调")
+    @ApiOperation(value = "重置队列记录为待推送", notes = "把指定 mrn 的 SUCCESS 记录改回 FAILED，用于重复联调")
     @PostMapping("/reset")
     public Map<String, Object> reset(@RequestParam String mrn) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -248,9 +248,8 @@ public class ManualPushController {
         long n = mongoTemplate.updateMulti(
                 Query.query(Criteria.where("patientId").is(mrn)),
                 new org.springframework.data.mongodb.core.query.Update()
-                        .set("status", "PENDING")
+                        .set("status", "FAILED")
                         .set("retryCount", 0)
-                        .unset("nextRetryTime")
                         .set("updatedAt", new Date()),
                 IntermediateService.PUSH_COLLECTION).getModifiedCount();
         result.put("success", true);

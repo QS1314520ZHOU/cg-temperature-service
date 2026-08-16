@@ -66,55 +66,28 @@ public class PushService {
      * @param traceId 追踪ID
      * @return 推送结果
      */
+    /**
+     * 推送单条体征数据（简化版：不做幂等检查，由 PushTask 管理状态）
+     *
+     * @return SUCCESS 或 FAILED
+     */
     public PushResult push(VitalSignPayload payload, String traceId) {
-        // 准入原则：patient 集合中存在该 _id 才推送；并用 patient 文档校准
-        // patientId = patient.mrn，mrn = patient.hisPid，patientName = patient.name
         if (!ensurePatientIdentity(payload, traceId)) {
             return PushResult.SKIPPED;
         }
 
         String patientIdMasked = maskPatientId(payload.getPatientId());
-        log.info("STEP_08_IDEMPOTENCY_CHECKED traceId={} patient={} metric={} planTime={}",
+        String idempotencyKey = buildIdempotencyKey(payload);
+        log.info(“PUSH traceId={} patient={} metric={} planTime={}”,
                 traceId, patientIdMasked, payload.getVitalsignType(), payload.getPlanTime());
 
-        // 幂等性检查
-        String idempotencyKey = buildIdempotencyKey(payload);
-        String payloadHash = computePayloadHash(payload);
-
-        Map<String, Object> existing = findExistingRecord(idempotencyKey);
-        if (existing != null) {
-            String existingHash = (String) existing.get("payloadHash");
-            String existingStatus = (String) existing.get("status");
-
-            if (payloadHash.equals(existingHash)) {
-                if ("SUCCESS".equals(existingStatus)) {
-                    log.info("STEP_08_IDEMPOTENCY_CHECKED traceId={} 幂等键已存在且状态为SUCCESS，跳过", traceId);
-                    return PushResult.SKIPPED;
-                }
-            } else {
-                log.info("STEP_08_IDEMPOTENCY_CHECKED traceId={} 幂等键已存在但payload变化，更新记录", traceId);
-                updateRecordForResend(idempotencyKey, payload, payloadHash);
-            }
-        } else {
-            saveNewRecord(payload, idempotencyKey, payloadHash, traceId);
-        }
-
-        // 原子更新状态为SENDING
-        if (!atomicUpdateToSending(idempotencyKey)) {
-            log.warn("STEP_10_PUSH_STARTED traceId={} 原子更新状态失败，可能已被其他线程处理", traceId);
-            return PushResult.SKIPPED;
-        }
-
-        log.info("STEP_10_PUSH_STARTED traceId={} 开始推送 patient={} metric={}", traceId, patientIdMasked, payload.getVitalsignType());
-
-        // 生成SOAP XML
+        // 生成 SOAP XML
         String dataXml = buildDataXml(payload);
         String requestXml = DataUtils.getRequestStr(dataXml);
-
         if (requestXml == null || requestXml.trim().isEmpty()) {
-            log.error("STEP_11_PUSH_RESPONDED traceId={} 请求体为空", traceId);
-            updateRecordAfterPush(idempotencyKey, false, "EMPTY_REQUEST", "请求体为空", null, null);
-            return PushResult.RETRY;
+            log.error(“PUSH traceId={} 请求体为空”, traceId);
+            saveMessages(idempotencyKey, null, null);
+            return PushResult.FAILED;
         }
 
         // 发送请求
@@ -124,243 +97,56 @@ public class PushService {
             response = HttpUtils.doPost(pushProperties.getUrl(), requestXml);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
-            log.error("STEP_11_PUSH_RESPONDED traceId={} 请求异常 durationMs={}", traceId, duration, e);
-            updateRecordAfterPush(idempotencyKey, false, "REQUEST_ERROR", e.getMessage(), requestXml, null);
-            return PushResult.RETRY;
+            log.error(“PUSH traceId={} 请求异常 durationMs={}”, traceId, duration, e);
+            saveMessages(idempotencyKey, requestXml, null);
+            return PushResult.FAILED;
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        String responseMsg = response.get("msg");
-        String responseCode = response.get("code");
+        String responseMsg = response.get(“msg”);
+        String responseCode = response.get(“code”);
 
-        // 详细日志：请求和响应内容
-        log.info("STEP_11_PUSH_RESPONDED traceId={} httpCode={} durationMs={}", traceId, responseCode, duration);
-        log.info("STEP_11_PUSH_REQUEST_DETAIL traceId={} patient={} metric={} requestXml长度={}",
-                traceId, patientIdMasked, payload.getVitalsignType(), requestXml != null ? requestXml.length() : 0);
-        log.info("STEP_11_PUSH_REQUEST_XML traceId={} 请求报文:{}", traceId, requestXml);
-        log.info("STEP_11_PUSH_RESPONSE_DETAIL traceId={} responseCode={} responseMsg={}",
-                traceId, responseCode, responseMsg != null ? responseMsg : "null");
-        log.info("STEP_11_PUSH_RESPONSE_XML traceId={} 响应报文:{}", traceId, responseMsg);
+        log.info(“PUSH traceId={} httpCode={} durationMs={}”, traceId, responseCode, duration);
+        log.info(“PUSH traceId={} 请求报文:{}”, traceId, requestXml);
+        log.info(“PUSH traceId={} 响应报文:{}”, traceId, responseMsg);
+
+        // 保存报文到队列记录
+        saveMessages(idempotencyKey, requestXml, responseMsg);
 
         // 判断结果
-        if (responseCode == null) {
-            log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 响应缺少状态码，按可重试处理", traceId);
-            updateRecordAfterPush(idempotencyKey, false, "REQUEST_ERROR", "响应缺少状态码", requestXml, responseMsg);
-            return PushResult.RETRY;
-        }
-        if ("200".equals(responseCode)) {
-            // 不能用 contains("成功")：“不成功/未成功”同样包含“成功”，会把失败误判为 SUCCESS 而丢数据
-            if (ResponseUtils.isBusinessSuccess(responseMsg)) {
-                updateRecordAfterPush(idempotencyKey, true, null, null, requestXml, responseMsg);
-                log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 推送成功 patient={} metric={}",
-                        traceId, patientIdMasked, payload.getVitalsignType());
-                return PushResult.SUCCESS;
-            } else {
-                String errorMsg = extractErrorMsg(responseMsg);
-                updateRecordAfterPush(idempotencyKey, false, "BUSINESS_ERROR", errorMsg, requestXml, responseMsg);
-                log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} 业务错误: {} patient={} metric={} responseMsg={}",
-                        traceId, errorMsg, patientIdMasked, payload.getVitalsignType(), responseMsg);
-                return PushResult.DEAD;
-            }
-        } else if (responseCode.startsWith("4")) {
-            // 4xx错误
-            updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
-            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP客户端错误: code={} patient={} metric={}",
-                    traceId, responseCode, patientIdMasked, payload.getVitalsignType());
-            return PushResult.DEAD;
+        if (“200”.equals(responseCode) && ResponseUtils.isBusinessSuccess(responseMsg)) {
+            log.info(“PUSH traceId={} 推送成功 patient={} metric={}”,
+                    traceId, patientIdMasked, payload.getVitalsignType());
+            return PushResult.SUCCESS;
         } else {
-            // 5xx或其他错误，允许重试
-            updateRecordAfterPush(idempotencyKey, false, "HTTP_" + responseCode, responseMsg, requestXml, responseMsg);
-            log.warn("STEP_12_PUSH_STATUS_UPDATED traceId={} HTTP服务端错误，可重试: code={} patient={} metric={}",
-                    traceId, responseCode, patientIdMasked, payload.getVitalsignType());
-            return PushResult.RETRY;
+            String errorMsg = (responseCode == null ? “无响应码” : “HTTP_” + responseCode) + “ “ + responseMsg;
+            log.warn(“PUSH traceId={} 推送失败: {}”, traceId, errorMsg);
+            return PushResult.FAILED;
         }
     }
 
-    /**
-     * 更新记录（带重试逻辑）
-     */
-    private void updateRecordAfterPush(String idempotencyKey, boolean success, String errorCode,
-                                        String errorMsg, String requestXml, String responseMsg) {
-        Update update = new Update();
-        update.set("updatedAt", new Date());
-
-        if (success) {
-            update.set("status", "SUCCESS");
-            update.set("sentAt", new Date());
-            update.set("nextRetryTime", null);
-            update.set("claimedAt", null);
-            update.set("lastErrorCode", null);
-            update.set("lastErrorMessage", null);
-        } else {
-            // 判断是否应该重试
-            boolean shouldRetry = shouldRetry(errorCode);
-            int retryCount = getRetryCount(idempotencyKey);
-
-            if (shouldRetry && retryCount < pushProperties.getMaxRetryCount()) {
-                update.set("status", "RETRY");
-                // 用 $inc 自增，避免“读-改-写”在多实例下丢失计数
-                update.inc("retryCount", 1);
-                // 指数退避
-                long delay = pushProperties.getRetryBaseInterval() * (1L << retryCount);
-                update.set("nextRetryTime", new Date(System.currentTimeMillis() + delay));
-                log.info("进入重试状态 retryCount={} nextDelayMs={}", retryCount + 1, delay);
-            } else {
-                update.set("status", "DEAD");
-                update.inc("retryCount", 1);
-                update.set("nextRetryTime", null);
-                log.info("进入DEAD状态 retryCount={}", retryCount + 1);
-            }
-        }
-
-        if (errorCode != null) {
-            update.set("lastErrorCode", errorCode);
-        }
-        if (errorMsg != null) {
-            update.set("lastErrorMessage", truncate(errorMsg, pushProperties.getMaxResponseBodyLength()));
-        }
+    /** 保存请求/响应报文到队列记录 */
+    private void saveMessages(String idempotencyKey, String requestXml, String responseMsg) {
+        Update update = new Update().set(“updatedAt”, new Date());
         if (requestXml != null) {
-            update.set("requestMsg", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
-            // *_Masked 字段存脱敏后的报文，避免患者标识明文落库
-            update.set("requestBodyMasked", truncate(ResponseUtils.maskXml(requestXml), pushProperties.getMaxRequestBodyLength()));
+            update.set(“requestMsg”, truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
+            update.set(“requestBodyMasked”, truncate(ResponseUtils.maskXml(requestXml), pushProperties.getMaxRequestBodyLength()));
         }
         if (responseMsg != null) {
-            update.set("responseMsg", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
-            update.set("responseBodyMasked", truncate(ResponseUtils.maskXml(responseMsg), pushProperties.getMaxResponseBodyLength()));
+            update.set(“responseMsg”, truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
+            update.set(“responseBodyMasked”, truncate(ResponseUtils.maskXml(responseMsg), pushProperties.getMaxResponseBodyLength()));
         }
-
         mongoTemplate.updateFirst(
-                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
+                Query.query(Criteria.where(“idempotencyKey”).is(idempotencyKey)),
                 update, COLLECTION_NAME);
     }
 
-    /**
-     * 判断是否应该重试
-     */
-    private boolean shouldRetry(String errorCode) {
-        if (errorCode == null) return false;
-        // 网络错误、超时、5xx可以重试
-        // 仅 5xx 与网络异常可自愈；4xx / 业务错误 / 空报文重发也不会成功，直接进入 DEAD（与类注释一致）
-        return errorCode.startsWith("HTTP_5") || "REQUEST_ERROR".equals(errorCode);
-    }
-
-    /**
-     * 获取当前重试次数
-     */
-    private int getRetryCount(String idempotencyKey) {
-        Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
-        Map<String, Object> record = mongoTemplate.findOne(query, Map.class, COLLECTION_NAME);
-        if (record != null && record.get("retryCount") instanceof Number) {
-            return ((Number) record.get("retryCount")).intValue();
-        }
-        return 0;
-    }
-
-    /**
-     * 构建幂等键
-     * 格式：patientId_series_vitalsignType_planTime
-     */
     private String buildIdempotencyKey(VitalSignPayload payload) {
         String planTimeStr = payload.getPlanTime() != null
-                ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : "";
-        return String.format("%s_%s_%s_%s",
-                payload.getPatientId(),
-                payload.getSeries(),
-                payload.getVitalsignType(),
-                planTimeStr);
-    }
-
-    /**
-     * 计算Payload哈希（使用SHA-256）
-     */
-    private String computePayloadHash(VitalSignPayload payload) {
-        // 必须与 IntermediateService.upsertPending 写入的 payloadHash 使用同一算法，
-        // 否则同一条记录的 hash 永不相等，幂等判定恒为“内容已变”，引发状态反复重置与重复发送。
-        return IntermediateService.computeSha256(payload);
-    }
-
-    private String nullToEmpty(String str) {
-        return str == null ? "" : str;
-    }
-
-    private Map<String, Object> findExistingRecord(String idempotencyKey) {
-        Query query = new Query(Criteria.where("idempotencyKey").is(idempotencyKey));
-        return mongoTemplate.findOne(query, Map.class, COLLECTION_NAME);
-    }
-
-    /**
-     * 保存完整Payload到中间表
-     */
-    private void saveNewRecord(VitalSignPayload payload, String idempotencyKey, String payloadHash, String traceId) {
-        Map<String, Object> record = new HashMap<>();
-        record.put("idempotencyKey", idempotencyKey);
-        record.put("traceId", traceId);
-        record.put("patientId", payload.getPatientId());
-        record.put("mrn", payload.getMrn());
-        record.put("patientName", payload.getPatientName());
-        record.put("series", payload.getSeries());
-        record.put("wardCode", payload.getWardCode());
-        record.put("vitalsignType", payload.getVitalsignType());
-        record.put("vitalsignName", payload.getVitalsignName());
-        record.put("vitalsignNVal1", payload.getVitalsignNVal1());
-        record.put("vitalsignNVal2", payload.getVitalsignNVal2());
-        record.put("vitalsignNVal3", payload.getVitalsignNVal3());
-        record.put("vitalsignSVal1", payload.getVitalsignSVal1());
-        record.put("vitalsignSVal2", payload.getVitalsignSVal2());
-        record.put("unit", payload.getUnit());
-        record.put("remark", payload.getRemark());
-        record.put("isValid", payload.getIsValid());
-        record.put("recordNurseId", payload.getRecordNurseId());
-        record.put("recordNurseName", payload.getRecordNurseName());
-        record.put("mongoPid", payload.getMongoPid());
-        if (payload.getPlanTime() != null) {
-            record.put("planTime", Date.from(payload.getPlanTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
-        }
-        if (payload.getRecordTime() != null) {
-            record.put("recordTime", Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
-        }
-        record.put("payloadHash", payloadHash);
-        record.put("status", "PENDING");
-        record.put("retryCount", 0);
-        record.put("createdAt", new Date());
-        record.put("updatedAt", new Date());
-        mongoTemplate.save(record, COLLECTION_NAME);
-    }
-
-    /**
-     * 更新记录用于重发
-     */
-    private void updateRecordForResend(String idempotencyKey, VitalSignPayload payload, String payloadHash) {
-        Update update = new Update();
-        update.set("payloadHash", payloadHash);
-        update.set("status", "PENDING");
-        update.set("retryCount", 0);
-        update.set("vitalsignNVal1", payload.getVitalsignNVal1());
-        update.set("vitalsignNVal2", payload.getVitalsignNVal2());
-        update.set("vitalsignNVal3", payload.getVitalsignNVal3());
-        update.set("vitalsignSVal1", payload.getVitalsignSVal1());
-        update.set("vitalsignSVal2", payload.getVitalsignSVal2());
-        update.set("recordNurseName", payload.getRecordNurseName());
-        update.set("updatedAt", new Date());
-        mongoTemplate.updateFirst(
-                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
-                update, COLLECTION_NAME);
-    }
-
-    /**
-     * 原子更新状态为SENDING
-     */
-    private boolean atomicUpdateToSending(String idempotencyKey) {
-        Update update = new Update();
-        update.set("status", "SENDING");
-        update.set("claimedAt", new Date());
-        update.set("updatedAt", new Date());
-        var result = mongoTemplate.updateFirst(
-                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)
-                        // PushTask 领取时已置为 SENDING，若不放行 SENDING 则此处永远更新 0 条，推送被无声跳过
-                        .and("status").in("PENDING", "RETRY", "SENDING")),
-                update, COLLECTION_NAME);
-        return result.getModifiedCount() > 0;
+                ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : “”;
+        return String.format(“%s_%s_%s_%s”,
+                payload.getPatientId(), payload.getSeries(),
+                payload.getVitalsignType(), planTimeStr);
     }
 
     /**
@@ -534,8 +320,7 @@ public class PushService {
 
     public enum PushResult {
         SUCCESS,
-        RETRY,
-        DEAD,
+        FAILED,
         SKIPPED
     }
 }

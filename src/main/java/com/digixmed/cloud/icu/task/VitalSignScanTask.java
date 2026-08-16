@@ -11,6 +11,7 @@ import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -89,6 +90,9 @@ public class VitalSignScanTask {
     @Value("${vitalsign.scan.admission-lookback-days:1}")
     private int admissionLookbackDays;
 
+    @Value("${vitalsign.auto-enabled:false}")
+    private boolean autoEnabled;
+
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
 
@@ -121,6 +125,15 @@ public class VitalSignScanTask {
 
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
+        if (!autoEnabled) {
+            log.debug("VITALSIGN_AUTO_DISABLED 自动回传已关闭，跳过定时扫描");
+            return;
+        }
+        doScan();
+    }
+
+    /** 原 execute() 的完整逻辑，供定时与手动共用 */
+    public void doScan() {
         String traceId = TraceIdGenerator.generate();
         LocalDateTime now = timeWindowService.now();
         log.info("STEP_01_PATIENT_SELECTED traceId={} 开始普通体征扫描 now={}", traceId, now);
@@ -169,6 +182,31 @@ public class VitalSignScanTask {
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描异常", traceId, e);
         }
+    }
+
+    /**
+     * 手动精准扫描：只处理指定患者的指定标准时刻
+     *
+     * @param mongoPid  Mongo patient._id
+     * @param point     标准时刻（已校验为 02/06/10/14/18/22 之一）
+     * @return 本次登记的记录数
+     */
+    public int scanOnePoint(String mongoPid, LocalDateTime point, String traceId) {
+        Document patient = mongoTemplate.findOne(
+                Query.query(Criteria.where("_id").is(new ObjectId(mongoPid))),
+                Document.class, "patient");
+        if (patient == null) {
+            log.warn("MANUAL traceId={} pid={} 患者不存在", traceId, mongoPid);
+            return 0;
+        }
+
+        int count = 0;
+        if (processVitalSign(traceId, mongoPid, patient, point, CODE_TEMPERATURE, temperatureHandler, null)) count++;
+        if (processPulseWithFallback(traceId, mongoPid, patient, point, null)) count++;
+        if (processVitalSign(traceId, mongoPid, patient, point, CODE_HEART_RATE, heartRateHandler, null)) count++;
+        if (processVitalSign(traceId, mongoPid, patient, point, CODE_BREATH, breathHandler, null)) count++;
+        if (processVitalSign(traceId, mongoPid, patient, point, CODE_PAIN, painScoreHandler, null)) count++;
+        return count;
     }
 
     private void processPatientByPid(String pid, Document patient, LocalDateTime planTime,
@@ -315,7 +353,7 @@ public class VitalSignScanTask {
         }
     }
 
-    private void processPulseWithFallback(String patientTraceId, String pid,
+    private boolean processPulseWithFallback(String patientTraceId, String pid,
                                            Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
         try {
             Document bedside = null;
@@ -337,14 +375,16 @@ public class VitalSignScanTask {
                 if (payload != null) {
                     PayloadTimeNormalizer.anchor(payload, planTime);
                     intermediateService.upsertPending(payload, patientTraceId);
+                    return true;
                 }
             }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} 脉搏处理异常", patientTraceId, pid, e);
         }
+        return false;
     }
 
-    private void processVitalSign(String patientTraceId, String pid, Document patient,
+    private boolean processVitalSign(String patientTraceId, String pid, Document patient,
                                    LocalDateTime planTime, String sourceCode,
                                    BaseVitalSignHandler handler, ClinicalTimeWindow window) {
         try {
@@ -361,7 +401,7 @@ public class VitalSignScanTask {
             Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
             if (bedside == null) {
                 log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
-                return;
+                return false;
             }
 
             log.info("STEP_03_QUERY traceId={} pid={} code={} 找到bedside记录: time={}, strVal={}",
@@ -372,12 +412,14 @@ public class VitalSignScanTask {
                 PayloadTimeNormalizer.anchor(payload, planTime);
                 intermediateService.upsertPending(payload, patientTraceId);
                 log.info("STEP_07 traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
+                return true;
             } else {
                 log.info("STEP_07 traceId={} pid={} code={} handler返回null", patientTraceId, pid, sourceCode);
             }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
         }
+        return false;
     }
 
     /**

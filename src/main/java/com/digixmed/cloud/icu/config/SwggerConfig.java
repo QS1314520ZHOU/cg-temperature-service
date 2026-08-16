@@ -1,5 +1,5 @@
  package com.digixmed.cloud.icu.config;
- 
+
  import io.swagger.annotations.ApiOperation;
  import org.springframework.context.annotation.Bean;
  import org.springframework.context.annotation.Configuration;
@@ -11,7 +11,7 @@
  import springfox.documentation.service.Contact;
  import springfox.documentation.spi.DocumentationType;
  import springfox.documentation.spring.web.plugins.Docket;
- 
+
 
  @EnableOpenApi
  @Configuration
@@ -26,7 +26,21 @@
        .paths(PathSelectors.any())
        .build();
    }
-   
+
+   @Bean
+   public Docket vitalSignApi() {
+     return new Docket(DocumentationType.OAS_30)
+       .apiInfo(new ApiInfoBuilder()
+         .title("体征回传手动测试接口")
+         .description("自动回传关闭时，通过本接口按患者+日期+时间点精准触发回传")
+         .version("1.0")
+         .build())
+       .select()
+       .apis(RequestHandlerSelectors.basePackage("com.digixmed.cloud.icu.controller"))
+       .paths(PathSelectors.any())
+       .build();
+   }
+
    private ApiInfo apiInfo() {
     return (new ApiInfoBuilder())
       .title("深医信息接口服务")

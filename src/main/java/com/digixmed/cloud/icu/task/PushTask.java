@@ -45,6 +45,9 @@ public class PushTask {
     /** SENDING 超时阈值：超过该时长仍未完成的记录视为卡死，恢复为 RETRY */
     private static final long SENDING_TIMEOUT_MS = 10 * 60 * 1000L;
 
+    @org.springframework.beans.factory.annotation.Value("${vitalsign.auto-enabled:false}")
+    private boolean autoEnabled;
+
     @Autowired
     private MongoTemplate mongoTemplate;
 
@@ -59,7 +62,15 @@ public class PushTask {
      */
     @Scheduled(cron = "0 0/2 * * * ?")
     public void execute() {
-        String traceId = TraceIdGenerator.generate();
+        if (!autoEnabled) {
+            log.debug("VITALSIGN_AUTO_DISABLED 自动推送已关闭");
+            return;
+        }
+        pushOnce(TraceIdGenerator.generate());
+    }
+
+    /** 单轮推送，供定时与手动共用 */
+    public void pushOnce(String traceId) {
         log.info("STEP_10_PUSH_STARTED traceId={} 开始推送任务", traceId);
 
         try {

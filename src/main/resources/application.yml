@@ -5,6 +5,14 @@ spring:
     mongodb:
       uri: mongodb://dxm:DB%40dmin@10.35.4.11:32121/SmartCare?maxPoolSize=100&waitQueueTimeoutMS=2000&connectTimeoutMS=3000&socketTimeoutMS=5000
       auto-index-creation: false
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+springfox:
+  documentation:
+    swagger-ui:
+      enabled: true
 
 server:
   port: ${SERVER_PORT:10245}
@@ -55,6 +63,13 @@ vitalsign:
   height-weight:
     height-unit: ${VITALSIGN_HEIGHT_UNIT:cm}
     weight-unit: ${VITALSIGN_WEIGHT_UNIT:ml}
+  # 自动回传总开关
+  # false（默认）= 所有定时任务只登记不执行，仅允许通过 Swagger 手动触发
+  # true = 恢复定时自动采集与推送
+  auto-enabled: ${VITALSIGN_AUTO_ENABLED:false}
+  # 手动触发接口开关：生产稳定后建议关掉
+  manual:
+    enabled: ${VITALSIGN_MANUAL_ENABLED:true}
 
 digixmed:
   url: http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService

@@ -73,6 +73,9 @@ public class DailySummaryTask {
     @Value("${vitalsign.summary.lookback-days:1}")
     private int summaryLookbackDays;
 
+    @Value("${vitalsign.auto-enabled:false}")
+    private boolean autoEnabled;
+
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
 
@@ -129,6 +132,15 @@ public class DailySummaryTask {
      */
     @Scheduled(cron = "${vitalsign.summary.cron:0 0 7 * * ?}")
     public void execute() {
+        if (!autoEnabled) {
+            log.debug("VITALSIGN_AUTO_DISABLED 自动汇总已关闭，跳过定时汇总");
+            return;
+        }
+        doSummary();
+    }
+
+    /** 原 execute() 的完整逻辑，供定时与手动共用 */
+    public void doSummary() {
         String traceId = TraceIdGenerator.generate();
         LocalDateTime now = timeWindowService.now();
         log.info("STEP_01_PATIENT_SELECTED traceId={} 开始每日汇总 now={}", traceId, now);
@@ -163,6 +175,35 @@ public class DailySummaryTask {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总异常", traceId, e);
         }
     }
+
+    /**
+     * 手动触发单患者汇总
+     *
+     * @param mongoPid   Mongo patient._id
+     * @param reportDate 报表日期
+     * @param traceId    追踪ID
+     * @return 本次登记的记录数
+     */
+    public int summarizeOnePatient(String mongoPid, LocalDate reportDate, String traceId) {
+        Document patient = mongoTemplate.findOne(
+                Query.query(Criteria.where("_id").is(new org.bson.types.ObjectId(mongoPid))),
+                Document.class, "patient");
+        if (patient == null) {
+            log.warn("MANUAL traceId={} pid={} 患者不存在", traceId, mongoPid);
+            return 0;
+        }
+
+        ClinicalTimeWindow window = timeWindowService.buildDailyWindow(reportDate);
+        log.info("MANUAL traceId={} pid={} reportDate={} 统计窗口=[{}, {})",
+                traceId, mongoPid, reportDate, window.getStart(), window.getEnd());
+
+        enqueueCounter.set(0);
+        processPatientSummary(mongoPid, patient, window, reportDate, traceId);
+        return enqueueCounter.get();
+    }
+
+    /** 记录入队条数的计数器 */
+    private final java.util.concurrent.atomic.AtomicInteger enqueueCounter = new java.util.concurrent.atomic.AtomicInteger(0);
 
     private void processPatientSummary(String pid, Document patient, ClinicalTimeWindow window,
                                         LocalDate reportDate, String parentTraceId) {
@@ -257,6 +298,7 @@ public class DailySummaryTask {
         if (payload != null) {
             PayloadTimeNormalizer.anchor(payload, window.getReportDate());
             intermediateService.upsertPending(payload, traceId);
+            enqueueCounter.incrementAndGet();
         }
     }
 
@@ -281,6 +323,7 @@ public class DailySummaryTask {
         if (payload != null) {
             PayloadTimeNormalizer.anchor(payload, window.getReportDate());
             intermediateService.upsertPending(payload, traceId);
+            enqueueCounter.incrementAndGet();
         }
     }
 

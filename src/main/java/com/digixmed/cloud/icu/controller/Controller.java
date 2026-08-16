@@ -214,14 +214,14 @@ public class Controller {
 
                 // 身高体重
                 try {
-                    VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, traceId);
+                    VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, null, traceId);
                     if (heightPayload != null) {
                         String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
                         if ("INSERT".equals(action)) totalInserted++;
                         else if ("SKIP".equals(action)) totalSkipped++;
                         log.info("MANUAL_SCAN traceId={} 入科身高处理完成 action={}", traceId, action);
                     }
-                    VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, traceId);
+                    VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, null, traceId);
                     if (weightPayload != null) {
                         String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
                         if ("INSERT".equals(action)) totalInserted++;
@@ -649,14 +649,14 @@ public class Controller {
         try {
             String hisPatientId = patient.getString("mrn");
             if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, window.getReportDate().toLocalDate(), patient)) {
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, window.getReportDate(), traceId);
+                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, window.getReportDate(), null, traceId);
                 if (heightPayload != null) {
                     String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
                     items.add("身高:" + action);
                 }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, window.getReportDate(), traceId);
+                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, window.getReportDate(), null, traceId);
                 if (weightPayload != null) {
                     String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;

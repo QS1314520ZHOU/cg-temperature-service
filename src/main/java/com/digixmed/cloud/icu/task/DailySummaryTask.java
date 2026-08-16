@@ -317,7 +317,7 @@ public class DailySummaryTask {
     /**
      * 调用 handler 构建 payload 并写入队列
      */
-    private void enqueue(DocHandler handler, Document doc, Document patient,
+    private void enqueue(BaseVitalSignHandler handler, Document doc, Document patient,
                          ClinicalTimeWindow window, String traceId) {
         VitalSignPayload payload = handler.handle(doc, patient, window.getReportDate(), traceId);
         if (payload != null) {

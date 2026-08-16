@@ -69,12 +69,21 @@ public abstract class BaseVitalSignHandler {
         payload.setPatientName(patientIdentityMapper.getPatientName(patient));
         payload.setSeries(patientIdentityMapper.getSeries());
         payload.setWardCode(patientIdentityMapper.getWardCode());
-        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
 
-        // 获取记录护士姓名
+        // 从 account 动态获取记录者工号和姓名
         String pid = getValueFromDocByKey(patient, "_id", String.class);
-        String nurseName = getRecordNurseName(pid, bedside, mongoTemplate, traceId);
-        payload.setRecordNurseName(nurseName != null ? nurseName : "系统管理员");
+        Document account = resolveRecordAccount(pid, bedside, mongoTemplate, traceId);
+        if (account != null) {
+            String username = getValueFromDocByKey(account, "username", String.class);
+            String trueName = getValueFromDocByKey(account, "trueName", String.class);
+            payload.setRecordNurseId(username != null ? username : "dba");
+            payload.setRecordNurseName(trueName != null ? trueName : "系统管理员");
+            log.info("STEP_07_NURSE traceId={} account resolved username={} trueName={}", traceId, username, trueName);
+        } else {
+            payload.setRecordNurseId("dba");
+            payload.setRecordNurseName("系统管理员");
+            log.warn("STEP_07_NURSE traceId={} 未找到account记录，使用默认值", traceId);
+        }
 
         // planTime 和 recordTime 都使用 bedside.time
         LocalDateTime bedsideTime = getBedsideTime(bedside);
@@ -148,7 +157,17 @@ public abstract class BaseVitalSignHandler {
         return value.isEmpty() ? null : value;
     }
 
-    protected String getRecordNurseName(String pid, Document bedside, MongoTemplate mongoTemplate, String traceId) {
+    /**
+     * 解析记录者的 account 文档
+     *
+     * 查找顺序：
+     *   1. bedside 中 code=param_Yishi 同时刻的 editUser
+     *   2. 当前 bedside 记录的 editUser
+     *   3. editUser (ObjectId) → 查 account 集合
+     *
+     * @return account 文档，未找到返回 null
+     */
+    protected Document resolveRecordAccount(String pid, Document bedside, MongoTemplate mongoTemplate, String traceId) {
         String editUser = null;
 
         // 1. 优先查询 param_Yishi 的 editUser
@@ -171,16 +190,14 @@ public abstract class BaseVitalSignHandler {
             log.info("STEP_07_NURSE traceId={} 从当前记录获取editUser={}", traceId, editUser);
         }
 
-        // 3. 根据 editUser 查询 account.trueName
+        // 3. 根据 editUser 查询 account
         if (editUser != null && !editUser.isEmpty()) {
             try {
                 ObjectId accountId = new ObjectId(editUser);
                 Query accountQuery = new Query(Criteria.where("_id").is(accountId));
                 Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
                 if (account != null) {
-                    String trueName = getValueFromDocByKey(account, "trueName", String.class);
-                    log.info("STEP_07_NURSE traceId={} 查询到account trueName={}", traceId, trueName);
-                    return trueName;
+                    return account;
                 }
             } catch (Exception e) {
                 log.warn("STEP_07_NURSE traceId={} 查询account失败 editUser={}: {}", traceId, editUser, e.getMessage());

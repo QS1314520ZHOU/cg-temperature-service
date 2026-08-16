@@ -124,6 +124,12 @@ public class IntermediateService {
             update.set("nextRetryTime", null);
             update.set("lastErrorCode", null);
             update.set("lastErrorMessage", null);
+            // 清除旧报文缓存，确保下次推送使用更新后的值重新生成 XML
+            update.set("requestMsg", null);
+            update.set("requestBodyMasked", null);
+            update.set("responseMsg", null);
+            update.set("responseBodyMasked", null);
+            update.set("sentAt", null);
             update.set("updatedAt", now);
             mongoTemplate.updateFirst(query, update, COLLECTION);
 
@@ -349,6 +355,12 @@ public class IntermediateService {
                 .set("recheckRequired", recheckRequired)
                 .set("recheckCompleted", recheckCompleted)
                 .set("status", "PENDING")  // Reset to PENDING for re-push
+                // 清除旧报文缓存，确保复测值写入后下次推送使用最新数据
+                .set("requestMsg", null)
+                .set("requestBodyMasked", null)
+                .set("responseMsg", null)
+                .set("responseBodyMasked", null)
+                .set("sentAt", null)
                 .set("updatedAt", new Date());
         mongoTemplate.updateFirst(query, update, COLLECTION);
     }

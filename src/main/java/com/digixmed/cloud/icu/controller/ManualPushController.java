@@ -169,6 +169,73 @@ public class ManualPushController {
         return list;
     }
 
+    @ApiOperation(value = "触发入科第一条体征回传",
+            notes = "根据患者 icuAdmissionTime 自动计算入科标准时刻，触发生命体征+身高体重回传")
+    @PostMapping("/admission")
+    public Map<String, Object> admission(
+            @ApiParam(value = "患者MRN（对应 Mongo patient.mrn）", required = true, example = "123")
+            @RequestParam String mrn,
+            @ApiParam(value = "是否登记后立即推送", defaultValue = "true")
+            @RequestParam(defaultValue = "true") boolean pushNow) {
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        String traceId = TraceIdGenerator.generate();
+        result.put("traceId", traceId);
+
+        if (!manualEnabled) {
+            result.put("success", false);
+            result.put("message", "手动接口已关闭（vitalsign.manual.enabled=false）");
+            return result;
+        }
+
+        Document patient = mongoTemplate.findOne(
+                Query.query(Criteria.where("mrn").is(mrn)), Document.class, "patient");
+        if (patient == null) {
+            result.put("success", false);
+            result.put("message", "未找到 mrn=" + mrn + " 对应的患者");
+            return result;
+        }
+        String pid = String.valueOf(patient.get("_id"));
+        result.put("pid", pid);
+        result.put("patientName", patient.getString("name"));
+
+        Date icuAdmissionTime = patient.get("icuAdmissionTime") instanceof Date
+                ? (Date) patient.get("icuAdmissionTime") : null;
+        if (icuAdmissionTime == null) {
+            result.put("success", false);
+            result.put("message", "该患者无 icuAdmissionTime 字段，无法触发入科体征");
+            return result;
+        }
+        LocalDateTime admissionTime = icuAdmissionTime.toInstant()
+                .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+        result.put("icuAdmissionTime", admissionTime.toString());
+
+        try {
+            log.info("MANUAL traceId={} mrn={} admissionTime={} 走入科体征链路", traceId, mrn, admissionTime);
+            int enqueued = vitalSignScanTask.scanAdmission(pid, traceId);
+            result.put("enqueued", enqueued);
+            result.put("branch", "ADMISSION(入科生命体征+身高体重)");
+
+            if (enqueued <= 0) {
+                result.put("success", true);
+                result.put("message", "入科时刻无数据或无体温记录，未登记新记录");
+                return result;
+            }
+
+            if (pushNow) {
+                pushTask.pushOnce(traceId);
+                result.put("pushed", true);
+            }
+            result.put("success", true);
+            result.put("message", "登记 " + enqueued + " 条" + (pushNow ? "并已触发推送" : "，待推送"));
+        } catch (Exception e) {
+            log.error("MANUAL traceId={} 入科体征回传异常", traceId, e);
+            result.put("success", false);
+            result.put("message", "执行异常：" + e.getMessage());
+        }
+        return result;
+    }
+
     @ApiOperation(value = "重置队列记录为待推送", notes = "把指定 mrn 的 SUCCESS/DEAD 记录改回 PENDING，用于重复联调")
     @PostMapping("/reset")
     public Map<String, Object> reset(@RequestParam String mrn) {

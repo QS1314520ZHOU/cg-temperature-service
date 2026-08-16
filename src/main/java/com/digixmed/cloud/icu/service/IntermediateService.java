@@ -265,7 +265,7 @@ public class IntermediateService {
         Update update = new Update()
                 .set("status", "RETRY")
                 .set("nextRetryTime", nextRetryTime)
-                // 用 $inc 自增，避免“读-改-写”在多实例并发下丢失重试计数
+                // 用 $inc 自增，避免"读-改-写"在多实例并发下丢失重试计数
                 .inc("retryCount", 1)
                 .set("lastErrorCode", errorCode)
                 .set("lastErrorMessage", errorMessage)
@@ -396,7 +396,7 @@ public class IntermediateService {
      */
     /**
      * 计算 payloadHash。
-     * 不得包含 traceId / className 等每次变化的字段，否则幂等比较永远判定”内容已变”。
+     * 不得包含 traceId / className 等每次变化的字段，否则幂等比较永远判定"内容已变"。
      *
      * recordTime 已被排除：planTime 已锚定标准时间点作为幂等键，
      * recordTime 是护士真实填写时刻，同一格子被反复编辑时会变化。
@@ -406,7 +406,7 @@ public class IntermediateService {
      * PushService 必须复用本方法，两处算法必须保持一致。
      */
     public static String computeSha256(VitalSignPayload payload) {
-        String raw = String.format(“%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s”,
+        String raw = String.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
                 nvl(payload.getPatientId()),
                 nvl(payload.getMrn()),
                 nvl(payload.getPatientName()),
@@ -425,15 +425,15 @@ public class IntermediateService {
                 nvl(payload.getRecordNurseId()),
                 nvl(payload.getRecordNurseName()),
                 nvl(payload.getMongoPid()),
-                payload.getPlanTime() != null ? payload.getPlanTime().format(FORMATTER) : “”
+                payload.getPlanTime() != null ? payload.getPlanTime().format(FORMATTER) : ""
         );
 
         try {
-            MessageDigest digest = MessageDigest.getInstance(“SHA-256”);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
             return bytesToHex(hash);
         } catch (Exception e) {
-            throw new RuntimeException(“SHA-256 algorithm unavailable”, e);
+            throw new RuntimeException("SHA-256 algorithm unavailable", e);
         }
     }
 

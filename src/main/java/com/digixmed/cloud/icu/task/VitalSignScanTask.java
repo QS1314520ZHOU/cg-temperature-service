@@ -244,7 +244,33 @@ public class VitalSignScanTask {
      *   入科时刻本身就是标准点 → 取其自身；否则取上一个标准点。
      *   原实现用 "hours.filter(h <= admissionHour).max().orElse(2)"，
      *   在 00:00-01:59 入科时会错误落到当天 02:00，而该窗口 [02:00,06:00) 并不包含入科时刻。
+     *
+     * @return 入科体征登记的记录数（含生命体征+身高体重），-1表示患者不存在
      */
+    public int scanAdmission(String mongoPid, String traceId) {
+        Document patient = mongoTemplate.findOne(
+                Query.query(Criteria.where("_id").is(new ObjectId(mongoPid))),
+                Document.class, "patient");
+        if (patient == null) {
+            log.warn("MANUAL traceId={} pid={} 患者不存在", traceId, mongoPid);
+            return -1;
+        }
+
+        // 查询执行前该患者的队列记录数
+        long before = mongoTemplate.count(
+                Query.query(Criteria.where("mongoPid").is(mongoPid)),
+                IntermediateService.PUSH_COLLECTION);
+
+        processAdmissionVitalSigns(mongoPid, patient, timeWindowService.now(), traceId);
+
+        // 查询执行后的记录数，差值即为本次新增/更新的条数
+        long after = mongoTemplate.count(
+                Query.query(Criteria.where("mongoPid").is(mongoPid)),
+                IntermediateService.PUSH_COLLECTION);
+
+        return (int) (after - before);
+    }
+
     private void processAdmissionVitalSigns(String pid, Document patient, LocalDateTime now, String traceId) {
         Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", Date.class);
         if (icuAdmissionTime == null) {

@@ -28,6 +28,7 @@ kingbase:
 vitalsign:
   push:
     url: ${VITALSIGN_PUSH_URL:http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService}
+    cron: ${VITALSIGN_PUSH_CRON:0 0/2 * * * ?}
     connection-timeout: 10000
     read-timeout: 30000
     enabled: true

@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
@@ -15,23 +14,22 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * 推送队列服务（vitalsign_push_queue）
  *
- * 状态机（简化版）：
- *   FAILED  → 推送中（原子领取） → SUCCESS
- *                                 → FAILED（失败回到待推送）
+ * 二态机：FAILED = 待推送（含推送失败）；SUCCESS = 已推送且内容未变
  *
- * 内容变化检测：
- *   SUCCESS 记录的 payloadHash 变化时 → 保存旧值到 invalidationPayload
- *   推送时先发 isValid=0（作废旧值），再发 isValid=1（新值生效）
+ * 字段职责：
+ *   payloadHash        - 当前待推内容的 hash
+ *   lastSuccessHash    - HIS 当前实际持有的值的 hash（仅推送成功时写入）
+ *   lastSuccessPayload - HIS 当前实际持有的值的快照（仅推送成功时写入）
  */
 @Service
 public class IntermediateService {
@@ -46,16 +44,17 @@ public class IntermediateService {
     @Autowired
     private MongoTemplate mongoTemplate;
 
-    // ==================== 核心方法 ====================
+    // ==================== 入队 ====================
 
     /**
      * 入队：创建或更新待推送记录
      *
      * 逻辑：
-     *   1. 无记录 → 插入 FAILED
-     *   2. 有记录，内容未变 + SUCCESS → 跳过
-     *   3. 有记录，内容未变 + FAILED → 更新字段（重试）
-     *   4. 有记录，内容变了 → 保存旧值，设 invalidationNeeded=true，状态→FAILED
+     *   1. 无记录 -> 插入 FAILED
+     *   2. 有记录，内容未变 + SUCCESS -> 跳过
+     *   3. 有记录，内容变了 / 状态 FAILED -> 更新业务字段，设 FAILED
+     *
+     * 注意：只覆盖业务字段和 updatedAt，不清空 lastErrorCode / requestMsg / responseMsg / sentAt / retryCount
      */
     public Map<String, Object> upsertPending(VitalSignPayload payload, String traceId) {
         if (payload == null || payload.getPatientId() == null || payload.getPatientId().trim().isEmpty()) {
@@ -85,7 +84,7 @@ public class IntermediateService {
             String existingHash = existing.getString("payloadHash");
             String existingStatus = existing.getString("status");
 
-            // 内容一致 + 已成功 → 跳过
+            // 内容一致 + 已成功 -> 跳过
             if (payloadHash.equals(existingHash) && "SUCCESS".equals(existingStatus)) {
                 result.put("action", "SKIP");
                 result.put("status", "SUCCESS");
@@ -93,33 +92,45 @@ public class IntermediateService {
                 return result;
             }
 
-            // 内容变化 → 保存旧值，标记需要作废
-            boolean contentChanged = !payloadHash.equals(existingHash);
-            Update update = buildPayloadUpdate(payload, payloadHash, traceId);
+            // 内容变化或状态 FAILED -> 更新业务字段，设 FAILED
+            // 只覆盖业务字段和 updatedAt，保留 lastErrorCode / requestMsg 等调试信息
+            Update update = new Update();
+            update.set("traceId", traceId);
+            update.set("payloadHash", payloadHash);
+            update.set("patientId", payload.getPatientId());
+            update.set("mrn", payload.getMrn());
+            update.set("patientName", payload.getPatientName());
+            update.set("series", payload.getSeries());
+            update.set("wardCode", payload.getWardCode());
+            update.set("vitalsignType", payload.getVitalsignType());
+            update.set("vitalsignName", payload.getVitalsignName());
+            update.set("unit", payload.getUnit());
+            update.set("vitalsignNVal1", payload.getVitalsignNVal1());
+            update.set("vitalsignNVal2", payload.getVitalsignNVal2());
+            update.set("vitalsignNVal3", payload.getVitalsignNVal3());
+            update.set("vitalsignSVal1", payload.getVitalsignSVal1());
+            update.set("vitalsignSVal2", payload.getVitalsignSVal2());
+            update.set("remark", payload.getRemark());
+            update.set("isValid", payload.getIsValid());
+            update.set("recordNurseId", payload.getRecordNurseId());
+            update.set("recordNurseName", payload.getRecordNurseName());
+            update.set("mongoPid", payload.getMongoPid());
+            if (payload.getPlanTime() != null) {
+                update.set("planTime", Date.from(payload.getPlanTime().atZone(ZONE).toInstant()));
+            }
+            if (payload.getRecordTime() != null) {
+                update.set("recordTime", Date.from(payload.getRecordTime().atZone(ZONE).toInstant()));
+            }
+            update.set("recheckRequired", payload.isRecheckRequired());
+            update.set("recheckCompleted", payload.isRecheckCompleted());
             update.set("status", "FAILED");
             update.set("retryCount", 0);
-            update.set("lastErrorCode", null);
-            update.set("lastErrorMessage", null);
-            update.set("requestMsg", null);
-            update.set("requestBodyMasked", null);
-            update.set("responseMsg", null);
-            update.set("responseBodyMasked", null);
-            update.set("sentAt", null);
-            update.set("claimedAt", null);
             update.set("updatedAt", now);
 
-            if (contentChanged) {
-                Document invPayload = buildInvalidationPayload(existing);
-                update.set("invalidationNeeded", true);
-                update.set("invalidationPayload", invPayload);
-                log.info("INVALIDATION_QUEUED traceId={} key={} 内容变化，旧值已保存", traceId, idempotencyKey);
-                result.put("action", "INVALIDATE_THEN_UPDATE");
-            } else {
-                // 内容未变但之前失败 → 直接重试，不需要作废
-                result.put("action", "RETRY");
-            }
-
+            boolean contentChanged = !payloadHash.equals(existingHash);
             mongoTemplate.updateFirst(query, update, COLLECTION);
+
+            result.put("action", contentChanged ? "CONTENT_CHANGED" : "RETRY");
             result.put("status", "FAILED");
             result.put("id", existing.get("_id").toString());
             return result;
@@ -143,30 +154,28 @@ public class IntermediateService {
         return result;
     }
 
-    // ==================== 领取与状态更新 ====================
+    // ==================== 推送状态更新 ====================
 
-    /**
-     * 原子领取下一条 FAILED 记录（防并发重复推送）
-     */
-    public Document claimNext() {
-        Date now = new Date();
+    /** 取出最多 limit 条 FAILED 记录（按 createdAt 升序） */
+    public List<Document> fetchPending(int limit) {
         Query query = new Query(Criteria.where("status").is("FAILED"))
                 .with(Sort.by(Sort.Direction.ASC, "createdAt"))
-                .limit(1);
-        Update update = new Update()
-                .set("status", "CLAIMED")
-                .set("claimedAt", now)
-                .set("updatedAt", now);
-        FindAndModifyOptions options = FindAndModifyOptions.options().returnNew(true).upsert(false);
-        return mongoTemplate.findAndModify(query, update, options, Document.class, COLLECTION);
+                .limit(limit);
+        return mongoTemplate.find(query, Document.class, COLLECTION);
     }
 
-    /** 标记成功 */
-    public void markSuccess(String idempotencyKey) {
+    /**
+     * 标记成功，同时记录 lastSuccessHash 和 lastSuccessPayload（HIS 当前持有的值）
+     * 只允许在推送成功那一刻写入，其他任何位置禁止修改
+     */
+    public void markSuccess(String idempotencyKey, String successHash, Document successPayload) {
         Update update = new Update()
                 .set("status", "SUCCESS")
+                .set("lastSuccessHash", successHash)
+                .set("lastSuccessPayload", successPayload)
                 .set("sentAt", new Date())
-                .set("claimedAt", null)
+                .set("lastErrorCode", null)
+                .set("lastErrorMessage", null)
                 .set("updatedAt", new Date());
         mongoTemplate.updateFirst(
                 Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
@@ -180,35 +189,10 @@ public class IntermediateService {
                 .inc("retryCount", 1)
                 .set("lastErrorCode", errorCode)
                 .set("lastErrorMessage", errorMessage)
-                .set("claimedAt", null)
                 .set("updatedAt", new Date());
         mongoTemplate.updateFirst(
                 Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
                 update, COLLECTION);
-    }
-
-    /** 清除 invalidation 标记 */
-    public void clearInvalidation(String idempotencyKey) {
-        Update update = new Update()
-                .set("invalidationNeeded", false)
-                .unset("invalidationPayload")
-                .set("updatedAt", new Date());
-        mongoTemplate.updateFirst(
-                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
-                update, COLLECTION);
-    }
-
-    /** 恢复卡死的 CLAIMED 记录 */
-    public int recoverStaleClaimed(long timeoutMs) {
-        Date threshold = new Date(System.currentTimeMillis() - timeoutMs);
-        Query query = new Query(
-                Criteria.where("status").is("CLAIMED").and("claimedAt").lte(threshold));
-        Update update = new Update()
-                .set("status", "FAILED")
-                .set("lastErrorCode", "CLAIMED_TIMEOUT")
-                .set("claimedAt", null)
-                .set("updatedAt", new Date());
-        return (int) mongoTemplate.updateMulti(query, update, COLLECTION).getModifiedCount();
     }
 
     // ==================== 复测方法 ====================
@@ -304,39 +288,6 @@ public class IntermediateService {
 
     private static String nvl(String s) { return s == null ? "" : s; }
 
-    private Update buildPayloadUpdate(VitalSignPayload payload, String payloadHash, String traceId) {
-        Update update = new Update();
-        update.set("traceId", traceId);
-        update.set("payloadHash", payloadHash);
-        update.set("patientId", payload.getPatientId());
-        update.set("mrn", payload.getMrn());
-        update.set("patientName", payload.getPatientName());
-        update.set("series", payload.getSeries());
-        update.set("wardCode", payload.getWardCode());
-        update.set("vitalsignType", payload.getVitalsignType());
-        update.set("vitalsignName", payload.getVitalsignName());
-        update.set("unit", payload.getUnit());
-        update.set("vitalsignNVal1", payload.getVitalsignNVal1());
-        update.set("vitalsignNVal2", payload.getVitalsignNVal2());
-        update.set("vitalsignNVal3", payload.getVitalsignNVal3());
-        update.set("vitalsignSVal1", payload.getVitalsignSVal1());
-        update.set("vitalsignSVal2", payload.getVitalsignSVal2());
-        update.set("remark", payload.getRemark());
-        update.set("isValid", payload.getIsValid());
-        update.set("recordNurseId", payload.getRecordNurseId());
-        update.set("recordNurseName", payload.getRecordNurseName());
-        update.set("mongoPid", payload.getMongoPid());
-        if (payload.getPlanTime() != null) {
-            update.set("planTime", Date.from(payload.getPlanTime().atZone(ZONE).toInstant()));
-        }
-        if (payload.getRecordTime() != null) {
-            update.set("recordTime", Date.from(payload.getRecordTime().atZone(ZONE).toInstant()));
-        }
-        update.set("recheckRequired", payload.isRecheckRequired());
-        update.set("recheckCompleted", payload.isRecheckCompleted());
-        return update;
-    }
-
     private void applyPayloadFields(Document doc, VitalSignPayload payload) {
         doc.append("patientId", payload.getPatientId());
         doc.append("mrn", payload.getMrn());
@@ -364,29 +315,5 @@ public class IntermediateService {
         }
         doc.append("recheckRequired", payload.isRecheckRequired());
         doc.append("recheckCompleted", payload.isRecheckCompleted());
-    }
-
-    private Document buildInvalidationPayload(Document existing) {
-        Document inv = new Document();
-        inv.append("patientId", existing.get("patientId"));
-        inv.append("mrn", existing.get("mrn"));
-        inv.append("patientName", existing.get("patientName"));
-        inv.append("series", existing.get("series"));
-        inv.append("wardCode", existing.get("wardCode"));
-        inv.append("vitalsignType", existing.get("vitalsignType"));
-        inv.append("vitalsignName", existing.get("vitalsignName"));
-        inv.append("unit", existing.get("unit"));
-        inv.append("vitalsignNVal1", existing.get("vitalsignNVal1"));
-        inv.append("vitalsignNVal2", existing.get("vitalsignNVal2"));
-        inv.append("vitalsignNVal3", existing.get("vitalsignNVal3"));
-        inv.append("vitalsignSVal1", existing.get("vitalsignSVal1"));
-        inv.append("vitalsignSVal2", existing.get("vitalsignSVal2"));
-        inv.append("remark", existing.get("remark"));
-        inv.append("recordNurseId", existing.get("recordNurseId"));
-        inv.append("recordNurseName", existing.get("recordNurseName"));
-        inv.append("mongoPid", existing.get("mongoPid"));
-        inv.append("planTime", existing.get("planTime"));
-        inv.append("recordTime", existing.get("recordTime"));
-        return inv;
     }
 }

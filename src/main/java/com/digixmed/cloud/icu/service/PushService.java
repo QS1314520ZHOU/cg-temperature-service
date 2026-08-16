@@ -286,7 +286,11 @@ public class PushService {
      * 直接推送作废报文（isValid=0），跳过幂等检查和状态管理
      * 用于内容变化时先发送旧值作废，再由正常 push 流程发送新值
      */
-    public void pushInvalidation(VitalSignPayload payload, String traceId) {
+    /**
+     * 直接推送作废报文（isValid=0），不做幂等检查
+     * 用于内容变化时先发送旧值作废，再由正常 push 流程发送新值
+     */
+    public PushResult pushInvalidation(VitalSignPayload payload, String traceId) {
         String patientIdMasked = maskPatientId(payload.getPatientId());
         log.info("INVALIDATION_PUSH traceId={} patient={} metric={} planTime={} isValid=0 开始推送作废报文",
                 traceId, patientIdMasked, payload.getVitalsignType(), payload.getPlanTime());
@@ -295,7 +299,7 @@ public class PushService {
         String requestXml = DataUtils.getRequestStr(dataXml);
         if (requestXml == null || requestXml.trim().isEmpty()) {
             log.warn("INVALIDATION_PUSH traceId={} 作废报文为空，跳过", traceId);
-            return;
+            return PushResult.FAILED;
         }
 
         try {
@@ -304,17 +308,13 @@ public class PushService {
             String responseMsg = response.get("msg");
             log.info("INVALIDATION_PUSH traceId={} httpCode={} response={}", traceId, responseCode, responseMsg);
 
-            // 作废报文发送后更新队列记录的 requestMsg（记录作废报文内容）
-            String idempotencyKey = buildIdempotencyKey(payload);
-            Update update = new Update()
-                    .set("invalidationRequestMsg", requestXml)
-                    .set("invalidationResponseMsg", responseMsg)
-                    .set("invalidationSentAt", new Date());
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
-                    update, COLLECTION_NAME);
+            if ("200".equals(responseCode) && ResponseUtils.isBusinessSuccess(responseMsg)) {
+                return PushResult.SUCCESS;
+            }
+            return PushResult.FAILED;
         } catch (Exception e) {
             log.error("INVALIDATION_PUSH traceId={} 作废报文推送异常", traceId, e);
+            return PushResult.FAILED;
         }
     }
 

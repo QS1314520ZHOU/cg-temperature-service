@@ -1,5 +1,19 @@
 # CG Temperature Service - 体温单服务
 
+## 字符集硬性要求（最高优先级）
+
+1. 代码结构部分只允许 ASCII 可打印字符。所有引号必须是半角 `"` 和 `'`，
+   禁止出现 `"` `"` `'` `'`（U+201C/201D/2018/2019）。
+2. 所有括号、分号、冒号、逗号必须半角：`() ; : ,`
+   禁止 `（）` `；` `：` `，`
+3. 禁止全角空格 U+3000，缩进只用半角空格。
+4. 中文只允许出现在两个位置：注释内部、字符串字面量内部。
+   字符串的定界符本身必须是半角双引号。
+5. 输出前自检：逐行扫描非 ASCII 字符，确认每一个都落在注释或字符串内部。
+
+正确：`log.info("PUSH traceId={} 推送成功", traceId);`
+错误：`log.info(“PUSH traceId={} 推送成功”, traceId);`
+
 ## 项目概述
 
 Spring Boot 2.2.2 + Java 11 服务，用于采集ICU患者生命体征数据并推送到HIS系统。
@@ -11,21 +25,38 @@ Spring Boot 2.2.2 + Java 11 服务，用于采集ICU患者生命体征数据并�
 采集层：VitalSignScanTask / DailySummaryTask
     ↓ VitalSignPayload
 队列层：IntermediateService → vitalsign_push_queue（MongoDB）
-    ↓ claimNext()
+    ↓ fetchPending()
 推送层：PushTask → PushService → SOAP/XML → HIS
 ```
 
-### 状态机
+### 状态机（二态机）
 ```
-PENDING → SENDING → SUCCESS
-                  → RETRY → SENDING → ...
-                  → DEAD
+FAILED → 推送中 → SUCCESS
+                 → FAILED（失败回到待推送）
 ```
+
+| 状态 | 含义 |
+|------|------|
+| `FAILED` | 待推送（扫描入队/推送失败回到FAILED） |
+| `SUCCESS` | 已推送且内容未变 |
+
+### 内容变化检测
+- `payloadHash`：当前待推内容的 hash
+- `lastSuccessHash`：HIS 当前实际持有的值的 hash（仅推送成功时写入）
+- `lastSuccessPayload`：HIS 当前实际持有的值的快照（仅推送成功时写入）
+- 内容变化时两步推送：先发 `isValid=0` 作废 `lastSuccessPayload`，等响应成功后再发 `isValid=1` 新值
+- 作废失败必须中止本条，不得推送新值
 
 ### 幂等机制
 - 幂等键：`patientId_series_vitalsignType_planTime`
 - 内容哈希：SHA-256（不含traceId/className等易变字段）
-- 相同内容+SUCCESS → 跳过；内容变化 → 重置为PENDING重新推送
+- 相同内容+SUCCESS → 跳过；内容变化 → 设FAILED + 保存旧值快照
+
+### 业务约束
+1. 扫描任务写队列时只覆盖业务字段和 updatedAt，禁止清空 lastErrorCode / requestMsg / responseMsg / sentAt / retryCount
+2. 时区统一 Asia/Shanghai
+3. JAXB 遇 null 会省略节点，空值一律输出空串
+4. 患者姓名、住院号等属于患者隐私，日志中必须脱敏
 
 ## 时间点规则
 

@@ -10,6 +10,7 @@ import com.digixmed.cloud.icu.service.HeightWeightNurseService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
+import com.digixmed.cloud.icu.service.DrugAmountCalculator;
 import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import com.digixmed.cloud.icu.model.InpatientDTO;
@@ -131,6 +132,9 @@ public class DailySummaryTask {
     @Autowired
     private IntakeOutputCalculator intakeOutputCalculator;
 
+    @Autowired
+    private DrugAmountCalculator drugAmountCalculator;
+
     /**
      * 执行每日汇总
      */
@@ -220,10 +224,10 @@ public class DailySummaryTask {
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-            // 查询窗口内所有bedside记录
+            // 查询窗口内所有bedside记录（左开右闭：time > start AND time <= end）
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("valid").ne(false)
-                    .and("time").gte(startDate).lt(endDate));
+                    .and("time").gt(startDate).lte(endDate));
             List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
 
             log.info("STEP_03_SOURCE_RECORDS_QUERIED traceId={} pid={} recordCount={}",
@@ -384,29 +388,22 @@ public class DailySummaryTask {
 
     /**
      * 处理饮入量、治疗输入量、总输入量
-     * 饮入量(1044) = param_biSi + param_YaoStomach_in_hour + param_YaoShuXue_in_hour
-     * 输入量(1045) = param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour
-     * 总入量(1009) = 六项去重求和（param_YaoShuXue_in_hour 不重复计算）
+     *
+     * 对齐护理记录单口径：
+     * 饮入量(1044) = param_kouFu + param_biSi + param_YaoStomach_in_hour（保持原口径）
+     * 输入量(1045) = param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour（保持原口径）
+     * 总入量(1009) = 药物治疗 + 胃肠摄入（新口径，对齐护理记录单）
+     *   药物治疗 = 带入药量(bedside) + 静脉入量(drugExe: 输血 + 各静脉途径)
+     *   胃肠摄入 = 鼻饲量(bedside手工 + drugExe肠内营养泵入) + 胃肠入量(bedside口服 + drugExe po等)
      */
     private void processIntakeAndOutput(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId) {
+        // 1044/1045 保持原口径
         List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
         List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
 
-        // 合并去重：六项唯一代码
-        List<String> allInputCodes = new ArrayList<>(oralCodes);
-        for (String c : therapyCodes) {
-            if (!allInputCodes.contains(c)) {
-                allInputCodes.add(c);
-            }
-        }
-
-        // 按各代码分别求和（用于1044/1045独立推送）
         BigDecimal oralTotal = sumByCodes(records, oralCodes);
         BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
-
-        // 总入量 = 六项去重求和（避免 param_YaoShuXue_in_hour 重复）
-        BigDecimal totalInput = sumByCodes(records, allInputCodes);
 
         // 饮入量 1044
         if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
@@ -420,7 +417,20 @@ public class DailySummaryTask {
             enqueue(therapyInputHandler, vDoc, patient, window, traceId);
         }
 
-        // 总入量 1009
+        // 总入量 1009（新口径：对齐护理记录单）
+        Date startDate = Date.from(window.getStart().atZone(ZONE).toInstant());
+        Date endDate = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
+        List<Document> drugExecutions = drugAmountCalculator.queryDrugExe(pid, startDate, endDate);
+        List<Document> drugMethods = drugAmountCalculator.queryDrugMethods();
+        DrugAmountCalculator.DrugChannelTotals drugChannelTotals =
+                drugAmountCalculator.sumDrugAmountsByChannel(
+                        drugExecutions, drugMethods,
+                        startDate.getTime(), endDate.getTime(), true);
+
+        BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
+                records, drugChannelTotals, traceId, pid);
+
         if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
             Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
             enqueue(totalInputHandler, vDoc, patient, window, traceId);
@@ -428,9 +438,10 @@ public class DailySummaryTask {
     }
 
     /**
-     * 处理总出量（固定七项 + 引流通配，逐条累加）
-     * 总出量(1010) = 尿量 + 大便量 + 呕吐物量 + 造瘘口量 + 咯血量 + 痰量 + 胃肠减压
-     *              + 所有 code 含 "_tube_" 的记录（逐条累加，不限制每 code 只取一条）
+     * 处理总出量（对齐护理记录单口径）
+     * 总出量(1010) = 尿量 + 净超滤量 + 排出物 + 引流液
+     *   排出物：param_daBianAmount, param_造瘘口量, param_outuwuliang, param_咯血, param_tanLiang
+     *   引流液：code含"引流" OR code==="param_tube_胃肠减压"
      */
     private void processTotalOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId) {
@@ -550,7 +561,7 @@ public class DailySummaryTask {
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-            Query query = new Query(Criteria.where("time").gte(startDate).lt(endDate));
+            Query query = new Query(Criteria.where("time").gt(startDate).lte(endDate));
             query.fields().include("pid");
             List<Document> docs = mongoTemplate.find(query, Document.class, "bedside");
 

@@ -26,14 +26,12 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * 普通体征扫描任务
@@ -167,10 +165,10 @@ public class VitalSignScanTask {
                         processPatientByPid(pid, patient, point, window, traceId);
                     }
                 }
-
-                // 入科第一条：生命体征 + 身高体重
-                processAdmissionVitalSigns(pid, patient, now, traceId);
             }
+
+            // 入科第一条：独立于 allPids，直接从 patient 集合按 icuAdmissionTime 取患者
+            processAdmissionSlots(now, traceId);
 
             // 血压：只取 07:00 槽位，按回看天数逐日扫描
             processBloodPressureSlots(now, traceId);
@@ -178,6 +176,32 @@ public class VitalSignScanTask {
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描完成", traceId);
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描异常", traceId, e);
+        }
+    }
+
+    /**
+     * 入科首条扫描：独立于 allPids，直接从 patient 集合按 icuAdmissionTime 取患者
+     *
+     * allPids 循环依赖 bedside 精确时刻匹配，入科患者（如 12:09）若无整点数据则不会被选中。
+     * 此方法独立查询 patient 集合中 icuAdmissionTime 在回看范围内的患者，确保入科首条不遗漏。
+     */
+    private void processAdmissionSlots(LocalDateTime now, String traceId) {
+        LocalDate earliest = now.toLocalDate().minusDays(Math.max(admissionLookbackDays, 0));
+        Date start = Date.from(earliest.atStartOfDay(ZONE).toInstant());
+        Date end = Date.from(now.atZone(ZONE).toInstant());
+
+        Query query = new Query(Criteria.where("icuAdmissionTime").gte(start).lte(end));
+        List<Document> patients = mongoTemplate.find(query, Document.class, "patient");
+        log.info("ADMISSION_SCAN traceId={} 回看{}天 入科患者数量={}",
+                traceId, admissionLookbackDays, patients.size());
+
+        for (Document patient : patients) {
+            Object id = patient.get("_id");
+            if (id == null) {
+                continue;
+            }
+            String pid = id.toString();
+            processAdmissionVitalSigns(pid, patient, now, traceId);
         }
     }
 
@@ -239,8 +263,11 @@ public class VitalSignScanTask {
      *
      * 入科标准点的取法：
      *   入科时刻本身就是标准点 → 取其自身；否则取上一个标准点。
-     *   原实现用 "hours.filter(h <= admissionHour).max().orElse(2)"，
-     *   在 00:00-01:59 入科时会错误落到当天 02:00，而该窗口 [02:00,06:00) 并不包含入科时刻。
+     *   00:00-01:59 入科 → 前一天 22:00（窗口 [22:00, 次日02:00) 包含入科时刻）。
+     *
+     * 调用方：processAdmissionSlots 直接从 patient 集合按 icuAdmissionTime 取患者，
+     *        不依赖 allPids（bedside 精确时刻匹配），确保入科首条不遗漏。
+     *        此方法内的日期范围判断是二次校验，不是唯一过滤点。
      *
      * @return 入科体征登记的记录数（含生命体征+身高体重），-1表示患者不存在
      */
@@ -455,41 +482,6 @@ public class VitalSignScanTask {
     }
 
     /**
-     * 处理生命体征并返回 payload（用于入科扫描获取体温记录者）
-     */
-    private VitalSignPayload processVitalSignAndGetPayload(String patientTraceId, String pid, Document patient,
-                                                            LocalDateTime planTime, String sourceCode,
-                                                            BaseVitalSignHandler handler, ClinicalTimeWindow window) {
-        try {
-            Query query = new Query(Criteria.where("pid").is(pid)
-                    .and("code").is(sourceCode)
-                    .and("valid").ne(false)
-                    .andOperator(exactTimeCriteria(planTime)))
-                    .with(Sort.by(Sort.Direction.DESC, "editTime"))
-                    .limit(1);
-
-            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
-            if (bedside == null) {
-                log.info("ADMISSION_VITALS traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
-                return null;
-            }
-
-            VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
-            if (payload == null) {
-                log.warn("ADMISSION_VITALS traceId={} pid={} code={} handler返回null，未入队", patientTraceId, pid, sourceCode);
-                return null;
-            }
-            PayloadTimeNormalizer.anchor(payload, planTime);
-            intermediateService.upsertPending(payload, patientTraceId);
-            log.info("ADMISSION_VITALS traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
-            return payload;
-        } catch (Exception e) {
-            log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
-            return null;
-        }
-    }
-
-    /**
      * 入科专用：窗口内取最早一条体征，不锚定时间
      *
      * 查询语义：[入科时刻, 标准点窗口结束) 内的首条记录。
@@ -546,39 +538,6 @@ public class VitalSignScanTask {
         } catch (Exception e) {
             log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
             return null;
-        }
-    }
-
-    /**
-     * 本轮候选患者：当前标准时间点窗口内有普通体征数据的 pid（去重）。
-     * 不依赖金仓在科列表，是否回传只看 patient 集合中是否存在该 _id。
-     */
-    private List<String> findCandidatePids(ClinicalTimeWindow window, String traceId) {
-        try {
-            Date startTime = Date.from(window.getStart().atZone(ZONE).toInstant());
-            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
-
-            List<String> codes = Arrays.asList(
-                    CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH, CODE_PAIN);
-
-            Query query = new Query(Criteria.where("code").in(codes)
-                    .and("valid").ne(false)
-                    .and("time").gte(startTime).lt(endTime));
-            query.fields().include("pid");
-            List<Document> docs = mongoTemplate.find(query, Document.class, BEDSIDE);
-
-            List<String> pids = docs.stream()
-                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
-                    .filter(one -> one != null && !one.isEmpty())
-                    .distinct()
-                    .collect(Collectors.toList());
-
-            log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) bedside命中pid数量={}",
-                    traceId, window.getStart(), window.getEnd(), pids.size());
-            return pids;
-        } catch (Exception e) {
-            log.error("STEP_01_PATIENT_SELECTED traceId={} 查询候选患者异常", traceId, e);
-            return new ArrayList<>();
         }
     }
 

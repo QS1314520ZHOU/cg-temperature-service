@@ -88,16 +88,23 @@ public class ClinicalTimeWindowService {
     }
 
     /**
-     * 构建每日汇总统计窗口 [前一天07:00, 当天07:00)
+     * 构建每日汇总统计窗口 (reportDate 07:00, reportDate+1 07:00]
+     *
+     * 对齐护理记录单（hljld-form.utils.ts）的左开右闭语义：
+     * - 07:00 归属上一护理日的最后一分钟（左开）
+     * - 次日 07:00 归属当前护理日的最后一分钟（右闭）
+     *
+     * reportDate=D 对应护理记录单 selectedDate=D，窗口 (D 07:00, D+1 07:00]。
+     * 查询语义：time > D 07:00 AND time <= D+1 07:00。
      */
     public ClinicalTimeWindow buildDailyWindow(LocalDate reportDate) {
-        LocalDateTime reportTime = LocalDateTime.of(reportDate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
-        LocalDateTime windowStart = reportTime.minusDays(1);
+        LocalDateTime windowStart = LocalDateTime.of(reportDate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+        LocalDateTime windowEnd = windowStart.plusDays(1);
         return ClinicalTimeWindow.builder()
                 .start(windowStart)
-                .end(reportTime)
+                .end(windowEnd)
                 .type(WindowType.DAILY_SUMMARY)
-                .reportDate(reportTime)
+                .reportDate(windowStart)
                 .build();
     }
 

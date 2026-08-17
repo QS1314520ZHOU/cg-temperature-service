@@ -66,14 +66,13 @@ public class VitalSignPayload {
      * 字符串值1
      * 体温：测量部位（腋温、口温等）
      * 呼吸：呼吸机状态（使用呼吸机、停止呼吸机）
-     * 大便次数：次数值
      * 出入量：总量值
      */
     private String vitalsignSVal1;
 
     /**
      * 字符串值2
-     * 预留扩展
+     * 大便次数：次数值（从 vitalsignSVal1 迁移至此）
      */
     private String vitalsignSVal2;
 
@@ -181,9 +180,8 @@ public class VitalSignPayload {
     private boolean recheckCompleted;
 
     /**
-     * 是否自定义类型：1=是，0=否
-     * 排出物量/胃管负压引流/引流量/净超滤量等自定义体征传1
+     * 是否自定义类型：1=是
+     * 仅四项自定义体征（排出物量/胃管负压引流/引流量/净超滤量）传1，其余为null（JAXB省略节点）。
      */
-    @Builder.Default
-    private int isCustomType = 0;
+    private Integer isCustomType;
 }

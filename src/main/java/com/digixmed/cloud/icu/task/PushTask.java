@@ -193,7 +193,7 @@ public class PushTask {
                     .isValid(doc.get("isValid") instanceof Number
                             ? ((Number) doc.get("isValid")).intValue() : 1)
                     .isCustomType(doc.get("isCustomType") instanceof Number
-                            ? ((Number) doc.get("isCustomType")).intValue() : 0)
+                            ? ((Number) doc.get("isCustomType")).intValue() : null)
                     .build();
         } catch (Exception e) {
             log.error("PAYLOAD_CONVERT_ERROR key={}", doc.getString("idempotencyKey"), e);

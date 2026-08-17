@@ -7,6 +7,7 @@ import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
+import com.digixmed.cloud.icu.service.DrugAmountCalculator;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
@@ -46,6 +47,9 @@ public class Controller {
 
     @Autowired
     private IntakeOutputCalculator intakeOutputCalculator;
+
+    @Autowired
+    private DrugAmountCalculator drugAmountCalculator;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -438,9 +442,9 @@ public class Controller {
         Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
         Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-        // 查询窗口内所有bedside记录
+        // 查询窗口内所有bedside记录（左开右闭：time > start AND time <= end）
         Query query = new Query(Criteria.where("pid").is(pid)
-                .and("time").gte(startDate).lt(endDate));
+                .and("time").gt(startDate).lte(endDate));
         List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
 
         // 大便次数（只查07:00）
@@ -524,17 +528,17 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 治疗输入量处理异常", traceId, e);
         }
 
-        // 总输入量（六项去重求和，避免 param_YaoShuXue_in_hour 重复）
+        // 总输入量（对齐护理记录单口径：药物治疗 + 胃肠摄入）
         try {
-            List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
-            List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
-            List<String> allInputCodes = new java.util.ArrayList<>(oralCodes);
-            for (String c : therapyCodes) {
-                if (!allInputCodes.contains(c)) {
-                    allInputCodes.add(c);
-                }
-            }
-            BigDecimal totalInput = sumByCodes(records, allInputCodes);
+            List<Document> drugExecutions = drugAmountCalculator.queryDrugExe(pid, startDate, endDate);
+            List<Document> drugMethods = drugAmountCalculator.queryDrugMethods();
+            DrugAmountCalculator.DrugChannelTotals drugChannelTotals =
+                    drugAmountCalculator.sumDrugAmountsByChannel(
+                            drugExecutions, drugMethods,
+                            startDate.getTime(), endDate.getTime(), true);
+
+            BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
+                    records, drugChannelTotals, traceId, pid);
             if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
                 VitalSignPayload payload = totalInputHandler.buildPayload(
                         totalInput.doubleValue(), patient, window.getReportDate(), traceId);
@@ -550,7 +554,7 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 总输入量处理异常", traceId, e);
         }
 
-        // 总出量（固定七项 + 引流通配，逐条累加）
+        // 总出量（对齐护理记录单：尿量 + 净超滤量 + 排出物 + 引流液）
         try {
             BigDecimal outputTotal = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
             if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {

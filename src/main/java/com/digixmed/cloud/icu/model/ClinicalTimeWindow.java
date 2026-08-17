@@ -70,13 +70,25 @@ public class ClinicalTimeWindow {
     }
 
     /**
-     * 检查指定时间是否在窗口内
+     * 检查指定时间是否在窗口内（左闭右开 [start, end)）
      *
      * @param time 要检查的时间
      * @return 是否在窗口内
      */
     public boolean contains(LocalDateTime time) {
         return !time.isBefore(start) && time.isBefore(end);
+    }
+
+    /**
+     * 检查指定时间是否在窗口内（左开右闭 (start, end]）
+     *
+     * 护理日语义：07:00 归属上一护理日，次日 07:00 归属当前护理日。
+     *
+     * @param time 要检查的时间
+     * @return 是否在窗口内
+     */
+    public boolean containsLeftOpenRightClosed(LocalDateTime time) {
+        return time.isAfter(start) && !time.isAfter(end);
     }
 
     /**

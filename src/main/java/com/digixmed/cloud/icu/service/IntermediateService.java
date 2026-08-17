@@ -112,6 +112,7 @@ public class IntermediateService {
             update.set("vitalsignSVal2", payload.getVitalsignSVal2());
             update.set("remark", payload.getRemark());
             update.set("isValid", payload.getIsValid());
+            update.set("isCustomType", payload.getIsCustomType());
             update.set("recordNurseId", payload.getRecordNurseId());
             update.set("recordNurseName", payload.getRecordNurseName());
             update.set("mongoPid", payload.getMongoPid());
@@ -261,7 +262,7 @@ public class IntermediateService {
     }
 
     public static String computeSha256(VitalSignPayload payload) {
-        String raw = String.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+        String raw = String.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
                 nvl(payload.getPatientId()), nvl(payload.getMrn()), nvl(payload.getPatientName()),
                 nvl(payload.getSeries()), nvl(payload.getWardCode()), nvl(payload.getVitalsignType()),
                 nvl(payload.getVitalsignName()), nvl(payload.getUnit()), nvl(payload.getVitalsignNVal1()),
@@ -270,7 +271,8 @@ public class IntermediateService {
                 nvl(payload.getRemark()), payload.getIsValid(),
                 nvl(payload.getRecordNurseId()), nvl(payload.getRecordNurseName()),
                 nvl(payload.getMongoPid()),
-                payload.getPlanTime() != null ? payload.getPlanTime().format(FORMATTER) : "");
+                payload.getPlanTime() != null ? payload.getPlanTime().format(FORMATTER) : "",
+                payload.getIsCustomType());
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
@@ -304,6 +306,7 @@ public class IntermediateService {
         doc.append("vitalsignSVal2", payload.getVitalsignSVal2());
         doc.append("remark", payload.getRemark());
         doc.append("isValid", payload.getIsValid());
+        doc.append("isCustomType", payload.getIsCustomType());
         doc.append("recordNurseId", payload.getRecordNurseId());
         doc.append("recordNurseName", payload.getRecordNurseName());
         doc.append("mongoPid", payload.getMongoPid());

@@ -248,6 +248,7 @@ public class PushService {
         dataValue.setVitalsignNVal3(payload.getVitalsignNVal3());
         dataValue.setVitalsignSVal1(payload.getVitalsignSVal1());
         dataValue.setVitalsignSVal2(payload.getVitalsignSVal2());
+        dataValue.setIsCustomType(payload.getIsCustomType());
 
         com.digixmed.cloud.icu.pojo.Data data = new com.digixmed.cloud.icu.pojo.Data();
         java.util.List<com.digixmed.cloud.icu.pojo.DataValue> list = new java.util.ArrayList<>();

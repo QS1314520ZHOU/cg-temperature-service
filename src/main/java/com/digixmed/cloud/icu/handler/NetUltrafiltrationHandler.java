@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  *
  * 业务目的：处理净超滤量汇总
  * 源数据：param_chaoLvLiang
- * 输出：vitalsignName=净超滤量(ml), vitalsignType=3127, unit=ml
+ * 输出：vitalsignName=净超滤量(ml), vitalsignType=3127, isCustomType=1
  */
 @Component
 public class NetUltrafiltrationHandler extends BaseVitalSignHandler {
@@ -44,7 +44,7 @@ public class NetUltrafiltrationHandler extends BaseVitalSignHandler {
                 .vitalsignName("净超滤量(ml)")
                 .vitalsignType("3127")
                 .vitalsignNVal1(formatDouble(value))
-                .unit("ml")
+                .isCustomType(1)
                 .build();
 
         fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);

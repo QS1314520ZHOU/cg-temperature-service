@@ -19,6 +19,11 @@ import java.time.LocalDateTime;
  *   planTime   = 标准时间点（02/06/10/14/18/22，血压与汇总为 07:00）→ 幂等键稳定
  *   recordTime = bedside.time（真实记录时刻）→ 报文里仍然保留真实时间
  *
+ * 例外 —— 入科首条体征：
+ *   入科链路（VitalSignScanTask.processAdmissionVitalSign）**不调用**本工具。
+ *   planTime 与 recordTime 均保留 bedside.time（真实入科记录时刻），
+ *   业务方要求入科首条不得锚定到标准点。
+ *
  * 注意：recordTime 已从 IntermediateService.computeSha256 中剔除，
  *      否则"值没变、只是记录时刻变了"会被误判为内容变化而重复回传。
  */

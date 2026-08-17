@@ -16,7 +16,7 @@ import java.util.List;
  *
  * 业务目的：处理排出物量汇总
  * 源数据：param_daBianAmount, param_造瘘口量, param_outuwuliang, param_咯血, param_tanLiang
- * 输出：vitalsignName=排出物量(ml), vitalsignType=3125, unit=ml
+ * 输出：vitalsignName=排出物量(ml), vitalsignType=3125, isCustomType=1
  */
 @Component
 public class DrainageOutputHandler extends BaseVitalSignHandler {
@@ -52,7 +52,7 @@ public class DrainageOutputHandler extends BaseVitalSignHandler {
                 .vitalsignName("排出物量(ml)")
                 .vitalsignType("3125")
                 .vitalsignNVal1(formatDouble(value))
-                .unit("ml")
+                .isCustomType(1)
                 .build();
 
         fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);

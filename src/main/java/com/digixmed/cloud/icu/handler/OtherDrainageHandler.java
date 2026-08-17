@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  *
  * 业务目的：处理其他引流量汇总
  * 源数据：窗口内所有包含 "_tube_" 的记录，排除 param_tube_胃肠减压
- * 输出：vitalsignName=引流量(ml), vitalsignType=3126, unit=ml
+ * 输出：vitalsignName=引流量(ml), vitalsignType=3126, isCustomType=1
  *
  * 计算逻辑：对窗口内所有 code 包含 "_tube_" 但不是 "param_tube_胃肠减压" 的记录求和
  */
@@ -52,7 +52,7 @@ public class OtherDrainageHandler extends BaseVitalSignHandler {
                 .vitalsignName("引流量(ml)")
                 .vitalsignType("3126")
                 .vitalsignNVal1(formatDouble(value))
-                .unit("ml")
+                .isCustomType(1)
                 .build();
 
         fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);

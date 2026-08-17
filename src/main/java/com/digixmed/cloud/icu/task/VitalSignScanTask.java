@@ -284,7 +284,7 @@ public class VitalSignScanTask {
             return;
         }
 
-        // 入科时刻所属标准点
+        // 入科时刻所属标准点（用于 handler 内部窗口构建）
         LocalDateTime admissionPlanTime = timeWindowService.getCurrentVitalPoint(admissionDateTime);
         ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
                 admissionPlanTime.toLocalDate(), admissionPlanTime.getHour());
@@ -300,25 +300,32 @@ public class VitalSignScanTask {
                 patientTraceId, pid, patientIdMasked, admissionDateTime, admissionPlanTime,
                 window.getStart(), window.getEnd());
 
-        // 1. 先处理体温，拿到记录者
-        VitalSignPayload tempPayload = processVitalSignAndGetPayload(
-                patientTraceId, pid, patient, admissionPlanTime, CODE_TEMPERATURE, temperatureHandler, window);
+        // 1. 五项生命体征：窗口内取最早一条，不锚定（planTime = recordTime = bedside.time）
+        VitalSignPayload tempPayload = processAdmissionVitalSign(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
+                CODE_TEMPERATURE, temperatureHandler, window);
+        processAdmissionVitalSign(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
+                CODE_PULSE, pulseHandler, window);
+        processAdmissionVitalSign(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
+                CODE_HEART_RATE, heartRateHandler, window);
+        processAdmissionVitalSign(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
+                CODE_BREATH, breathHandler, window);
+        processAdmissionVitalSign(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
+                CODE_PAIN, painScoreHandler, window);
 
-        // 2. 处理其他生命体征
-        processPulse(patientTraceId, pid, patient, admissionPlanTime, window);
-        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_HEART_RATE, heartRateHandler, window);
-        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_BREATH, breathHandler, window);
-        processVitalSign(patientTraceId, pid, patient, admissionPlanTime, CODE_PAIN, painScoreHandler, window);
-
-        // 3. 身高体重（仅当本次有体温记录时才回传，否则等下一轮）
+        // 2. 身高体重（与体温解耦：体温缺失不阻断身高体重）
         if (tempPayload == null) {
-            log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，跳过身高体重", patientTraceId, pid);
-            return;
+            log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，身高体重将使用默认记录者", patientTraceId, pid);
         }
 
-        // 4. 锁定记录者并处理身高体重（planTime 统一锚定入科当天 07:00，与汇总链路保持同一套幂等键规则）
-        NurseRef nurse = heightWeightNurseService.pin(pid, tempPayload.getRecordNurseId(),
-                tempPayload.getRecordNurseName(), "ADMISSION");
+        // 3. 锁定记录者并处理身高体重（planTime 锚定入科当天 07:00）
+        String nurseId = tempPayload != null ? tempPayload.getRecordNurseId() : null;
+        String nurseName = tempPayload != null ? tempPayload.getRecordNurseName() : null;
+        NurseRef nurse = heightWeightNurseService.pin(pid, nurseId, nurseName, "ADMISSION");
         LocalDateTime hwPlanTime = admissionPlanTime.toLocalDate().atTime(7, 0);
         try {
             VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
@@ -475,6 +482,66 @@ public class VitalSignScanTask {
             PayloadTimeNormalizer.anchor(payload, planTime);
             intermediateService.upsertPending(payload, patientTraceId);
             log.info("ADMISSION_VITALS traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
+            return payload;
+        } catch (Exception e) {
+            log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
+            return null;
+        }
+    }
+
+    /**
+     * 入科专用：窗口内取最早一条体征，不锚定时间
+     *
+     * 查询语义：[入科时刻, 标准点窗口结束) 内的首条记录。
+     * 起点用真实入科时刻（不是标准点），避免捞到入科前的历史数据。
+     * 返回的 payload 的 planTime = recordTime = icuAdmissionTime（入科时刻），不做锚定。
+     *
+     * 注意：handler 内部用 planTime.getHour() 构建窗口（TemperatureHandler、BreathHandler），
+     *       因此这里传标准点（10:00）给 handler，查到 bedside 后再用 bedside.time 覆盖 planTime。
+     */
+    private VitalSignPayload processAdmissionVitalSign(String patientTraceId, String pid,
+                                                        Document patient, LocalDateTime admissionDateTime,
+                                                        LocalDateTime standardPoint, String sourceCode,
+                                                        BaseVitalSignHandler handler, ClinicalTimeWindow window) {
+        try {
+            Date startTime = Date.from(admissionDateTime.atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
+            log.info("ADMISSION_VITALS traceId={} pid={} code={} 入科查询窗口=[{}, {})",
+                    patientTraceId, pid, sourceCode, admissionDateTime, window.getEnd());
+
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(sourceCode)
+                    .and("valid").ne(false)
+                    .and("time").gte(startTime).lt(endTime))
+                    .with(Sort.by(Sort.Direction.ASC, "time")
+                            .and(Sort.by(Sort.Direction.DESC, "editTime")))
+                    .limit(1);
+
+            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+            if (bedside == null) {
+                log.info("ADMISSION_VITALS traceId={} pid={} code={} 窗口内未找到bedside记录", patientTraceId, pid, sourceCode);
+                return null;
+            }
+
+            Date bedsideTime = getValueFromDocByKey(bedside, "time", Date.class);
+            log.info("ADMISSION_VITALS traceId={} pid={} code={} 找到bedside记录: time={}, strVal={}",
+                    patientTraceId, pid, sourceCode, bedsideTime, bedside.get("strVal"));
+
+            // 传标准点给 handler（内部用 getHour() 构建窗口），查到 bedside 后再覆盖 planTime
+            VitalSignPayload payload = handler.handle(bedside, patient, standardPoint, patientTraceId);
+            if (payload == null) {
+                log.warn("ADMISSION_VITALS traceId={} pid={} code={} handler返回null", patientTraceId, pid, sourceCode);
+                return null;
+            }
+
+            // 入科首条不锚定：planTime = recordTime = icuAdmissionTime
+            payload.setPlanTime(admissionDateTime);
+            payload.setRecordTime(admissionDateTime);
+
+            intermediateService.upsertPending(payload, patientTraceId);
+            log.info("ADMISSION_VITALS traceId={} pid={} code={} planTime={} recordTime={} 处理成功",
+                    patientTraceId, pid, sourceCode, payload.getPlanTime(), payload.getRecordTime());
             return payload;
         } catch (Exception e) {
             log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);

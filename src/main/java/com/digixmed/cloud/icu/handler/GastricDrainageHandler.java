@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  *
  * 业务目的：处理胃管负压引流量汇总
  * 源数据：param_tube_胃肠减压
- * 输出：vitalsignName=胃管负压引流(ml), vitalsignType=3120, unit=ml
+ * 输出：vitalsignName=胃管负压引流(ml), vitalsignType=3120, isCustomType=1
  */
 @Component
 public class GastricDrainageHandler extends BaseVitalSignHandler {
@@ -44,7 +44,7 @@ public class GastricDrainageHandler extends BaseVitalSignHandler {
                 .vitalsignName("胃管负压引流(ml)")
                 .vitalsignType("3120")
                 .vitalsignNVal1(formatDouble(value))
-                .unit("ml")
+                .isCustomType(1)
                 .build();
 
         fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);

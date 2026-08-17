@@ -6,6 +6,7 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.IntermediateService;
+import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
@@ -39,19 +40,12 @@ public class Controller {
     /** 普通体征标准时间点（小时） */
     private static final List<Integer> VITAL_SIGN_HOURS = Arrays.asList(2, 6, 10, 14, 18, 22);
 
-    /** 总出量(1010)固定七项代码 */
-    private static final List<String> OUTPUT_FIXED_CODES = Arrays.asList(
-            "param_niaoLiang",
-            "param_daBianAmount",
-            "param_outuwuliang",
-            "param_造瘘口量",
-            "param_咯血",
-            "param_tanLiang",
-            "param_tube_胃肠减压"
-    );
 
     @Autowired
     private IntermediateService intermediateService;
+
+    @Autowired
+    private IntakeOutputCalculator intakeOutputCalculator;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -110,7 +104,7 @@ public class Controller {
     @ApiOperation(value = "队列统计", notes = "查看推送队列状态统计")
     public Map<String, Object> queueStats() {
         Map<String, Object> stats = new LinkedHashMap<>();
-        String[] statuses = {"PENDING", "SENDING", "SUCCESS", "RETRY", "DEAD"};
+        String[] statuses = {"FAILED", "SUCCESS"};
         long total = 0;
         for (String status : statuses) {
             Query query = new Query(Criteria.where("status").is(status));
@@ -556,24 +550,9 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 总输入量处理异常", traceId, e);
         }
 
-        // 总出量（固定七项 + 引流通配）
+        // 总出量（固定七项 + 引流通配，逐条累加）
         try {
-            java.util.Set<String> counted = new java.util.HashSet<>();
-            BigDecimal outputTotal = BigDecimal.ZERO;
-            // 固定七项
-            for (Document doc : records) {
-                String code = doc.getString("code");
-                if (code != null && OUTPUT_FIXED_CODES.contains(code) && counted.add(code)) {
-                    outputTotal = outputTotal.add(parseBigDecimal(doc.getString("strVal")));
-                }
-            }
-            // 引流通配：code 含 "_tube_"
-            for (Document doc : records) {
-                String code = doc.getString("code");
-                if (code != null && code.contains("_tube_") && counted.add(code)) {
-                    outputTotal = outputTotal.add(parseBigDecimal(doc.getString("strVal")));
-                }
-            }
+            BigDecimal outputTotal = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
             if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {
                 VitalSignPayload payload = totalOutputHandler.buildPayload(
                         outputTotal.doubleValue(), patient, window.getReportDate(), traceId);
@@ -710,7 +689,7 @@ public class Controller {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(code)
                 .and("time").gte(startTime).lt(endTime)
-                .and("valid").is(true));
+                .and("valid").ne(false));
         return mongoTemplate.findOne(query, Document.class, "bedside");
     }
 

@@ -57,7 +57,7 @@ public class StoolCountHandler extends BaseVitalSignHandler {
         VitalSignPayload payload = VitalSignPayload.builder()
                 .vitalsignName("大便次数")
                 .vitalsignType("1007")
-                .vitalsignSVal1(strVal)
+                .vitalsignSVal2(strVal)
                 .unit("次")
                 .build();
 

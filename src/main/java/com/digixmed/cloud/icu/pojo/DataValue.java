@@ -57,7 +57,9 @@
 /*     */   private String vitalsignSVal1;
 /*     */   @XmlElement(name = "vitalsignSVal2")
 /*     */   private String vitalsignSVal2;
-/*     */   
+/*     */   @XmlElement(name = "isCustomType")
+/*     */   private int isCustomType;
+/*     */
 /*     */   public void setIsValid(int isValid) {
 /*  60 */     this.isValid = isValid;
 /*     */   }
@@ -193,7 +195,15 @@
 /*     */   public String getVitalsignSVal2() {
 /* 184 */     return this.vitalsignSVal2;
 /*     */   }
-/*     */   
+/*     */
+/*     */   public void setIsCustomType(int isCustomType) {
+/*     */     this.isCustomType = isCustomType;
+/*     */   }
+/*     */
+/*     */   public int getIsCustomType() {
+/*     */     return this.isCustomType;
+/*     */   }
+/*     */
 /*     */   public void setVitalsignType(String vitalsignType) {
 /* 188 */     this.vitalsignType = vitalsignType;
 /*     */   }

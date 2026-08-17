@@ -179,4 +179,11 @@ public class VitalSignPayload {
      * 复测是否完成
      */
     private boolean recheckCompleted;
+
+    /**
+     * 是否自定义类型：1=是，0=否
+     * 排出物量/胃管负压引流/引流量/净超滤量等自定义体征传1
+     */
+    @Builder.Default
+    private int isCustomType = 0;
 }

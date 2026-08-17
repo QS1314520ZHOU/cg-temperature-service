@@ -9,6 +9,7 @@ import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
+import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
 import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
 import com.digixmed.cloud.icu.model.InpatientDTO;
@@ -60,17 +61,6 @@ public class DailySummaryTask {
 
     private static final Logger log = LoggerFactory.getLogger(DailySummaryTask.class);
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
-
-    /** 总出量(1010)固定七项代码 */
-    private static final List<String> OUTPUT_FIXED_CODES = Arrays.asList(
-            "param_niaoLiang",
-            "param_daBianAmount",
-            "param_outuwuliang",
-            "param_造瘘口量",
-            "param_咯血",
-            "param_tanLiang",
-            "param_tube_胃肠减压"
-    );
 
     /** 病区编码，与 VitalSignScanTask 统一使用同一配置项 */
     @Value("${vitalsign.patient.ward-code:125011}")
@@ -137,6 +127,9 @@ public class DailySummaryTask {
 
     @Autowired
     private HeightWeightHandler heightWeightHandler;
+
+    @Autowired
+    private IntakeOutputCalculator intakeOutputCalculator;
 
     /**
      * 执行每日汇总
@@ -435,41 +428,13 @@ public class DailySummaryTask {
     }
 
     /**
-     * 处理总出量（固定七项 + 引流通配）
+     * 处理总出量（固定七项 + 引流通配，逐条累加）
      * 总出量(1010) = 尿量 + 大便量 + 呕吐物量 + 造瘘口量 + 咯血量 + 痰量 + 胃肠减压
-     *              + 所有 code 含 "_tube_" 的记录
-     * 去重：param_tube_胃肠减压 同时命中固定项和通配，Set 自动去重
+     *              + 所有 code 含 "_tube_" 的记录（逐条累加，不限制每 code 只取一条）
      */
     private void processTotalOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId) {
-        BigDecimal total = BigDecimal.ZERO;
-        java.util.Set<String> counted = new java.util.HashSet<>();
-
-        // 固定七项
-        for (Document doc : records) {
-            String code = getValueFromDocByKey(doc, "code", String.class);
-            if (code != null && OUTPUT_FIXED_CODES.contains(code) && counted.add(code)) {
-                String val = getValueFromDocByKey(doc, "strVal", String.class);
-                try {
-                    if (val != null) total = total.add(new BigDecimal(val.trim()));
-                } catch (NumberFormatException e) {
-                    // skip
-                }
-            }
-        }
-
-        // 引流通配：code 含 "_tube_"（param_tube_胃肠减压 已在固定项中，Set 自动去重）
-        for (Document doc : records) {
-            String code = getValueFromDocByKey(doc, "code", String.class);
-            if (code != null && code.contains("_tube_") && counted.add(code)) {
-                String val = getValueFromDocByKey(doc, "strVal", String.class);
-                try {
-                    if (val != null) total = total.add(new BigDecimal(val.trim()));
-                } catch (NumberFormatException e) {
-                    // skip
-                }
-            }
-        }
+        BigDecimal total = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);

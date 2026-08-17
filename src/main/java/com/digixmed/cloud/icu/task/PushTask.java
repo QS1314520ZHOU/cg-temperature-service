@@ -45,7 +45,7 @@ public class PushTask {
             "vitalsignSVal1", "vitalsignSVal2",
             "patientId", "mrn", "patientName", "series", "wardCode",
             "remark", "recordNurseId", "recordNurseName", "mongoPid",
-            "planTime", "recordTime");
+            "planTime", "recordTime", "isCustomType");
 
     @Value("${vitalsign.auto-enabled:false}")
     private boolean autoEnabled;
@@ -192,6 +192,8 @@ public class PushTask {
                             : toLocal(doc.get("planTime")))
                     .isValid(doc.get("isValid") instanceof Number
                             ? ((Number) doc.get("isValid")).intValue() : 1)
+                    .isCustomType(doc.get("isCustomType") instanceof Number
+                            ? ((Number) doc.get("isCustomType")).intValue() : 0)
                     .build();
         } catch (Exception e) {
             log.error("PAYLOAD_CONVERT_ERROR key={}", doc.getString("idempotencyKey"), e);

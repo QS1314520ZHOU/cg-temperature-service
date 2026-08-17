@@ -57,9 +57,9 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
 
     /** 身高体重差异项：除这三个参数外，取数、时间、记录者、公共字段完全共用 */
     private enum Metric {
-        HEIGHT("身高", "1013", Arrays.asList("sg", "fg"),
+        HEIGHT("身高", "1013", Collections.singletonList("sg"),
                 (p, v) -> p.setVitalsignNVal1(v)),
-        WEIGHT("体重", "1014", Collections.singletonList("zt"),
+        WEIGHT("体重", "1014", Collections.singletonList("tz"),
                 (p, v) -> p.setVitalsignSVal1(v));
 
         private final String name;

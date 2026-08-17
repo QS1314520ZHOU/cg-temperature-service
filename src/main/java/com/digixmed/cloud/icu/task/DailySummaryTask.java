@@ -259,7 +259,7 @@ public class DailySummaryTask {
 
             // 身高体重（检查是否需要发送）
             if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, reportDate, patient)) {
-                LocalDateTime sendTime = window.getReportDate();
+                LocalDateTime sendTime = window.getEnd();
                 NurseRef nurse = heightWeightNurseService.resolve(pid);
                 VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
                         patient, sendTime, nurse, patientTraceId);
@@ -303,9 +303,9 @@ public class DailySummaryTask {
             return;
         }
         VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient,
-                window.getReportDate(), traceId);
+                window.getEnd(), traceId);
         if (payload != null) {
-            PayloadTimeNormalizer.anchor(payload, window.getReportDate());
+            PayloadTimeNormalizer.anchor(payload, window.getEnd());
             intermediateService.upsertPending(payload, traceId);
             enqueueCounter.incrementAndGet();
         }
@@ -318,7 +318,7 @@ public class DailySummaryTask {
         Document doc = new Document();
         doc.append("strVal", strVal);
         doc.append("code", code);
-        Date time = Date.from(window.getReportDate().atZone(ZONE).toInstant());
+        Date time = Date.from(window.getEnd().atZone(ZONE).toInstant());
         doc.append("time", time);
         return doc;
     }
@@ -328,7 +328,7 @@ public class DailySummaryTask {
      */
     private void enqueue(BaseVitalSignHandler handler, Document doc, Document patient,
                          ClinicalTimeWindow window, String traceId) {
-        VitalSignPayload payload = handler.handle(doc, patient, window.getReportDate(), traceId);
+        VitalSignPayload payload = handler.handle(doc, patient, window.getEnd(), traceId);
         if (payload == null) {
             String code = getValueFromDocByKey(doc, "code", String.class);
             String pid = getValueFromDocByKey(patient, "_id", String.class);
@@ -336,7 +336,7 @@ public class DailySummaryTask {
                     traceId, handler.getClass().getSimpleName(), code, pid);
             return;
         }
-        PayloadTimeNormalizer.anchor(payload, window.getReportDate());
+        PayloadTimeNormalizer.anchor(payload, window.getEnd());
         intermediateService.upsertPending(payload, traceId);
         enqueueCounter.incrementAndGet();
     }

@@ -441,6 +441,7 @@ public class Controller {
 
         Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
         Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        LocalDateTime planTimeDate = window.getEnd();
 
         // 查询窗口内所有bedside记录（左开右闭：time > start AND time <= end）
         Query query = new Query(Criteria.where("pid").is(pid)
@@ -456,7 +457,7 @@ public class Controller {
                     .and("time").gte(stoolStart).lt(stoolEnd));
             Document stoolRecord = mongoTemplate.findOne(stoolQuery, Document.class, "bedside");
             if (stoolRecord != null) {
-                VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -475,7 +476,7 @@ public class Controller {
             if (urineTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", urineTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_niaoLiang");
-                VitalSignPayload payload = urineOutputHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = urineOutputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -495,7 +496,7 @@ public class Controller {
             if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", oralTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_kouFu");
-                VitalSignPayload payload = oralIntakeHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = oralIntakeHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -515,7 +516,7 @@ public class Controller {
             if (therapyTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", therapyTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_YaoYeti_in_hour");
-                VitalSignPayload payload = therapyInputHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = therapyInputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -541,7 +542,7 @@ public class Controller {
                     records, drugChannelTotals, traceId, pid);
             if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
                 VitalSignPayload payload = totalInputHandler.buildPayload(
-                        totalInput.doubleValue(), patient, window.getReportDate(), traceId);
+                        totalInput.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -559,7 +560,7 @@ public class Controller {
             BigDecimal outputTotal = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
             if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {
                 VitalSignPayload payload = totalOutputHandler.buildPayload(
-                        outputTotal.doubleValue(), patient, window.getReportDate(), traceId);
+                        outputTotal.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -579,7 +580,7 @@ public class Controller {
             if (drainageTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", drainageTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_daBianAmount");
-                VitalSignPayload payload = drainageOutputHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = drainageOutputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -598,7 +599,7 @@ public class Controller {
             if (gastricTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", gastricTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_tube_胃肠减压");
-                VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -623,7 +624,7 @@ public class Controller {
             if (otherTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", otherTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_tube_other");
-                VitalSignPayload payload = otherDrainageHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = otherDrainageHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -642,7 +643,7 @@ public class Controller {
             if (ultraTotal.compareTo(BigDecimal.ZERO) > 0) {
                 Document doc = new Document("strVal", ultraTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_chaoLvLiang");
-                VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient, window.getReportDate(), traceId);
+                VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
@@ -658,15 +659,15 @@ public class Controller {
         // 身高体重
         try {
             String hisPatientId = patient.getString("mrn");
-            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, window.getReportDate().toLocalDate(), patient)) {
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, window.getReportDate(), null, traceId);
+            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, window.getStart().toLocalDate(), patient)) {
+                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, planTimeDate, null, traceId);
                 if (heightPayload != null) {
                     String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
                     items.add("身高:" + action);
                 }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, window.getReportDate(), null, traceId);
+                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, planTimeDate, null, traceId);
                 if (weightPayload != null) {
                     String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;

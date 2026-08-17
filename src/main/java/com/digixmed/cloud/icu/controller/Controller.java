@@ -395,10 +395,12 @@ public class Controller {
     private Map<String, Object> processBloodPressure(String pid, Document patient,
                                                       LocalDate date, String traceId) {
         LocalDateTime planTime = LocalDateTime.of(date, LocalTime.of(7, 0, 0));
-        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(date, 7);
+        // 07:00 不是标准体征时间点，手动构建窗口
+        LocalDateTime bpStart = LocalDateTime.of(date, LocalTime.of(6, 0, 0));
+        LocalDateTime bpEnd = LocalDateTime.of(date, LocalTime.of(7, 0, 0));
 
-        Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-        Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date startTime = Date.from(bpStart.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+        Date endTime = Date.from(bpEnd.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
         Query bpQuery = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_nibp_s")

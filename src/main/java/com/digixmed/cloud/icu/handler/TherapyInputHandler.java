@@ -28,7 +28,6 @@ public class TherapyInputHandler extends BaseVitalSignHandler {
     private static final List<String> THERAPY_INPUT_CODES = Arrays.asList(
             "param_带入药量",
             "param_YaoYeti_in_hour",
-            "param_YaoYeti_in_hou",  // 兼容拼写错误
             "param_YaoShuXue_in_hour"
     );
 

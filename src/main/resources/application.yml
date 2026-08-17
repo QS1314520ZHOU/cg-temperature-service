@@ -67,7 +67,7 @@ vitalsign:
   # 自动回传总开关
   # false（默认）= 所有定时任务只登记不执行，仅允许通过 Swagger 手动触发
   # true = 恢复定时自动采集与推送
-  auto-enabled: ${VITALSIGN_AUTO_ENABLED:false}
+  auto-enabled: ${VITALSIGN_AUTO_ENABLED:true}
   # 手动触发接口开关：生产稳定后建议关掉
   manual:
     enabled: ${VITALSIGN_MANUAL_ENABLED:true}

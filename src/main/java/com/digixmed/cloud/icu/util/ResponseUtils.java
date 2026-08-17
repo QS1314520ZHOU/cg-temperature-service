@@ -5,7 +5,7 @@ package com.digixmed.cloud.icu.util;
  *
  * <p>历史实现使用 {@code responseMsg.contains("成功")} 判定业务结果，
  * 但对方返回的失败报文形如 {@code <msg>不成功：xxx</msg>} / {@code <msg>未成功</msg>}，
- * 同样包含“成功”二字，会把失败误判为成功并把记录置为 SUCCESS，造成数据永久丢失。
+ * 同样包含"成功"二字，会把失败误判为成功并把记录置为 SUCCESS，造成数据永久丢失。
  * 统一在此处做严格判定，回传链路与推送链路共用同一规则。
  */
 public final class ResponseUtils {

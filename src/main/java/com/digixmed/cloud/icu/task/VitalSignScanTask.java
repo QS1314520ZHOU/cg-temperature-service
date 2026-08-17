@@ -125,9 +125,10 @@ public class VitalSignScanTask {
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
         if (!autoEnabled) {
-            log.debug("VITALSIGN_AUTO_DISABLED 自动回传已关闭，跳过定时扫描");
+            log.warn("SCAN_SKIPPED autoEnabled=false, 自动回传已关闭, 跳过本轮");
             return;
         }
+        log.info("SCAN_TRIGGERED cron触发开始扫描");
         doScan();
     }
 
@@ -467,11 +468,13 @@ public class VitalSignScanTask {
             }
 
             VitalSignPayload payload = handler.handle(bedside, patient, planTime, patientTraceId);
-            if (payload != null) {
-                PayloadTimeNormalizer.anchor(payload, planTime);
-                intermediateService.upsertPending(payload, patientTraceId);
-                log.info("ADMISSION_VITALS traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
+            if (payload == null) {
+                log.warn("ADMISSION_VITALS traceId={} pid={} code={} handler返回null，未入队", patientTraceId, pid, sourceCode);
+                return null;
             }
+            PayloadTimeNormalizer.anchor(payload, planTime);
+            intermediateService.upsertPending(payload, patientTraceId);
+            log.info("ADMISSION_VITALS traceId={} pid={} code={} 处理成功", patientTraceId, pid, sourceCode);
             return payload;
         } catch (Exception e) {
             log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);

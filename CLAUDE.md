@@ -100,16 +100,19 @@ FAILED → 推送中 → SUCCESS
 |------|------|------|
 | 大便次数 | param_汇总大便次数 | 只查07:00数据 |
 | 小便量 | param_niaoLiang | 窗口内求和 |
-| 饮入量 | param_kouFu等 | 窗口内求和 |
-| 治疗输入量 | param_YaoYeti_in_hour等 | 窗口内求和 |
-| 总输入量 | 饮入+治疗 | 计算值 |
-| 总出量 | 动态配置（configParam.calculation=out） | 窗口内求和 |
-| 排出物量 | 排出物代码 | 窗口内求和 |
+| 饮入量(1044) | param_kouFu + param_biSi + param_YaoStomach_in_hour | 窗口内求和 |
+| 输入量(1045) | param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour | 窗口内求和 |
+| 总入量(1009) | 六项去重求和 | param_YaoShuXue_in_hour 不重复计算 |
+| 总出量(1010) | 固定七项 + `_tube_`通配 | 见下方说明 |
+| 排出物量(3125) | param_daBianAmount + param_造瘘口量 + param_outuwuliang + param_咯血 + param_tanLiang | 窗口内求和 |
 | 胃管负压引流 | param_tube_胃肠减压 | 窗口内求和 |
 | 其他引流量 | code含`_tube_`但非胃肠减压 | 窗口内求和 |
 | 净超滤量 | param_chaoLvLiang | 窗口内求和 |
 | 身高 | dFormData sg/fg | 1013 |
 | 体重 | dFormData tz/zt | 1014 |
+
+**总出量(1010)固定七项**：param_niaoLiang, param_daBianAmount, param_outuwuliang, param_造瘘口量, param_咯血, param_tanLiang, param_tube_胃肠减压
+**总出量通配**：所有 code 含 `_tube_` 的记录（与固定项去重，param_tube_胃肠减压 不重复计算）
 
 ## 体温复测逻辑
 

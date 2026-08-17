@@ -39,6 +39,17 @@ public class Controller {
     /** 普通体征标准时间点（小时） */
     private static final List<Integer> VITAL_SIGN_HOURS = Arrays.asList(2, 6, 10, 14, 18, 22);
 
+    /** 总出量(1010)固定七项代码 */
+    private static final List<String> OUTPUT_FIXED_CODES = Arrays.asList(
+            "param_niaoLiang",
+            "param_daBianAmount",
+            "param_outuwuliang",
+            "param_造瘘口量",
+            "param_咯血",
+            "param_tanLiang",
+            "param_tube_胃肠减压"
+    );
+
     @Autowired
     private IntermediateService intermediateService;
 
@@ -519,13 +530,17 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 治疗输入量处理异常", traceId, e);
         }
 
-        // 总输入量
+        // 总输入量（六项去重求和，避免 param_YaoShuXue_in_hour 重复）
         try {
             List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
             List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
-            BigDecimal oralTotal = sumByCodes(records, oralCodes);
-            BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
-            BigDecimal totalInput = oralTotal.add(therapyTotal);
+            List<String> allInputCodes = new java.util.ArrayList<>(oralCodes);
+            for (String c : therapyCodes) {
+                if (!allInputCodes.contains(c)) {
+                    allInputCodes.add(c);
+                }
+            }
+            BigDecimal totalInput = sumByCodes(records, allInputCodes);
             if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
                 VitalSignPayload payload = totalInputHandler.buildPayload(
                         totalInput.doubleValue(), patient, window.getReportDate(), traceId);
@@ -541,20 +556,32 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 总输入量处理异常", traceId, e);
         }
 
-        // 总出量
+        // 总出量（固定七项 + 引流通配）
         try {
-            List<String> outputCodes = getDynamicOutputCodes(pid, traceId);
-            if (!outputCodes.isEmpty()) {
-                BigDecimal outputTotal = sumByCodes(records, outputCodes);
-                if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {
-                    VitalSignPayload payload = totalOutputHandler.buildPayload(
-                            outputTotal.doubleValue(), patient, window.getReportDate(), traceId);
-                    if (payload != null) {
-                        String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
-                        if ("INSERT".equals(action)) inserted++;
-                        else if ("SKIP".equals(action)) skipped++;
-                        items.add("总出量:" + action);
-                    }
+            java.util.Set<String> counted = new java.util.HashSet<>();
+            BigDecimal outputTotal = BigDecimal.ZERO;
+            // 固定七项
+            for (Document doc : records) {
+                String code = doc.getString("code");
+                if (code != null && OUTPUT_FIXED_CODES.contains(code) && counted.add(code)) {
+                    outputTotal = outputTotal.add(parseBigDecimal(doc.getString("strVal")));
+                }
+            }
+            // 引流通配：code 含 "_tube_"
+            for (Document doc : records) {
+                String code = doc.getString("code");
+                if (code != null && code.contains("_tube_") && counted.add(code)) {
+                    outputTotal = outputTotal.add(parseBigDecimal(doc.getString("strVal")));
+                }
+            }
+            if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {
+                VitalSignPayload payload = totalOutputHandler.buildPayload(
+                        outputTotal.doubleValue(), patient, window.getReportDate(), traceId);
+                if (payload != null) {
+                    String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
+                    if ("INSERT".equals(action)) inserted++;
+                    else if ("SKIP".equals(action)) skipped++;
+                    items.add("总出量:" + action);
                 }
             }
         } catch (Exception e) {
@@ -732,43 +759,4 @@ public class Controller {
         return clazz.cast(value);
     }
 
-    /**
-     * 动态获取出量代码
-     */
-    private List<String> getDynamicOutputCodes(String pid, String traceId) {
-        try {
-            Query configQuery = new Query(Criteria.where("pid").is(pid)
-                    .and("groupName").is("出入量"));
-            Document config = mongoTemplate.findOne(configQuery, Document.class, "bedsideConfig");
-            if (config == null) return Collections.emptyList();
-
-            @SuppressWarnings("unchecked")
-            List<Document> groups = (List<Document>) config.get("groups");
-            if (groups == null) return Collections.emptyList();
-
-            for (Document group : groups) {
-                if ("出量".equals(group.getString("name"))) {
-                    @SuppressWarnings("unchecked")
-                    List<Document> items = (List<Document>) group.get("items");
-                    if (items == null) continue;
-
-                    List<String> codes = new ArrayList<>();
-                    for (Document item : items) {
-                        String code = item.getString("code");
-                        if (code != null) {
-                            Query paramQuery = new Query(Criteria.where("code").is(code));
-                            Document param = mongoTemplate.findOne(paramQuery, Document.class, "configParam");
-                            if (param != null && "out".equals(param.getString("calculation"))) {
-                                codes.add(code);
-                            }
-                        }
-                    }
-                    return codes;
-                }
-            }
-        } catch (Exception e) {
-            log.error("MANUAL_SCAN traceId={} 获取动态出量配置失败 pid={}", traceId, pid, e);
-        }
-        return Collections.emptyList();
-    }
 }

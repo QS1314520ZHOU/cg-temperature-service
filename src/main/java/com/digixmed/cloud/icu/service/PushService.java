@@ -78,14 +78,14 @@ public class PushService {
 
         String patientIdMasked = maskPatientId(payload.getPatientId());
         String idempotencyKey = buildIdempotencyKey(payload);
-        log.info(“PUSH traceId={} patient={} metric={} planTime={}”,
+        log.info("PUSH traceId={} patient={} metric={} planTime={}",
                 traceId, patientIdMasked, payload.getVitalsignType(), payload.getPlanTime());
 
         // 生成 SOAP XML
         String dataXml = buildDataXml(payload);
         String requestXml = DataUtils.getRequestStr(dataXml);
         if (requestXml == null || requestXml.trim().isEmpty()) {
-            log.error(“PUSH traceId={} 请求体为空”, traceId);
+            log.error("PUSH traceId={} 请求体为空", traceId);
             saveMessages(idempotencyKey, null, null);
             return PushResult.FAILED;
         }
@@ -97,54 +97,54 @@ public class PushService {
             response = HttpUtils.doPost(pushProperties.getUrl(), requestXml);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
-            log.error(“PUSH traceId={} 请求异常 durationMs={}”, traceId, duration, e);
+            log.error("PUSH traceId={} 请求异常 durationMs={}", traceId, duration, e);
             saveMessages(idempotencyKey, requestXml, null);
             return PushResult.FAILED;
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        String responseMsg = response.get(“msg”);
-        String responseCode = response.get(“code”);
+        String responseMsg = response.get("msg");
+        String responseCode = response.get("code");
 
-        log.info(“PUSH traceId={} httpCode={} durationMs={}”, traceId, responseCode, duration);
-        log.info(“PUSH traceId={} 请求报文:{}”, traceId, requestXml);
-        log.info(“PUSH traceId={} 响应报文:{}”, traceId, responseMsg);
+        log.info("PUSH traceId={} httpCode={} durationMs={}", traceId, responseCode, duration);
+        log.info("PUSH traceId={} 请求报文:{}", traceId, requestXml);
+        log.info("PUSH traceId={} 响应报文:{}", traceId, responseMsg);
 
         // 保存报文到队列记录
         saveMessages(idempotencyKey, requestXml, responseMsg);
 
         // 判断结果
-        if (“200”.equals(responseCode) && ResponseUtils.isBusinessSuccess(responseMsg)) {
-            log.info(“PUSH traceId={} 推送成功 patient={} metric={}”,
+        if ("200".equals(responseCode) && ResponseUtils.isBusinessSuccess(responseMsg)) {
+            log.info("PUSH traceId={} 推送成功 patient={} metric={}",
                     traceId, patientIdMasked, payload.getVitalsignType());
             return PushResult.SUCCESS;
         } else {
-            String errorMsg = (responseCode == null ? “无响应码” : “HTTP_” + responseCode) + “ “ + responseMsg;
-            log.warn(“PUSH traceId={} 推送失败: {}”, traceId, errorMsg);
+            String errorMsg = (responseCode == null ? "无响应码" : "HTTP_" + responseCode) + " " + responseMsg;
+            log.warn("PUSH traceId={} 推送失败: {}", traceId, errorMsg);
             return PushResult.FAILED;
         }
     }
 
     /** 保存请求/响应报文到队列记录 */
     private void saveMessages(String idempotencyKey, String requestXml, String responseMsg) {
-        Update update = new Update().set(“updatedAt”, new Date());
+        Update update = new Update().set("updatedAt", new Date());
         if (requestXml != null) {
-            update.set(“requestMsg”, truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
-            update.set(“requestBodyMasked”, truncate(ResponseUtils.maskXml(requestXml), pushProperties.getMaxRequestBodyLength()));
+            update.set("requestMsg", truncate(requestXml, pushProperties.getMaxRequestBodyLength()));
+            update.set("requestBodyMasked", truncate(ResponseUtils.maskXml(requestXml), pushProperties.getMaxRequestBodyLength()));
         }
         if (responseMsg != null) {
-            update.set(“responseMsg”, truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
-            update.set(“responseBodyMasked”, truncate(ResponseUtils.maskXml(responseMsg), pushProperties.getMaxResponseBodyLength()));
+            update.set("responseMsg", truncate(responseMsg, pushProperties.getMaxResponseBodyLength()));
+            update.set("responseBodyMasked", truncate(ResponseUtils.maskXml(responseMsg), pushProperties.getMaxResponseBodyLength()));
         }
         mongoTemplate.updateFirst(
-                Query.query(Criteria.where(“idempotencyKey”).is(idempotencyKey)),
+                Query.query(Criteria.where("idempotencyKey").is(idempotencyKey)),
                 update, COLLECTION_NAME);
     }
 
     private String buildIdempotencyKey(VitalSignPayload payload) {
         String planTimeStr = payload.getPlanTime() != null
-                ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : “”;
-        return String.format(“%s_%s_%s_%s”,
+                ? payload.getPlanTime().format(PLAN_TIME_FORMATTER) : "";
+        return String.format("%s_%s_%s_%s",
                 payload.getPatientId(), payload.getSeries(),
                 payload.getVitalsignType(), planTimeStr);
     }
@@ -153,7 +153,7 @@ public class PushService {
      * 推送前校准病人标识：
      *   1. 按 mongoPid 回查 patient 文档，不存在直接跳过（不判断金仓状态）
      *   2. patientId = patient.mrn，mrn = patient.hisPid，patientName = patient.name
-     *   3. patientId 仍为空时不推送，避免 HIS 回“没有相关入参病人信息”导致 DEAD 堆积
+     *   3. patientId 仍为空时不推送，避免 HIS 回"没有相关入参病人信息"导致 DEAD 堆积
      */
     private boolean ensurePatientIdentity(VitalSignPayload payload, String traceId) {
         if (payload == null) {

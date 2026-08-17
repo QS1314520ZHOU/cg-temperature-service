@@ -59,9 +59,10 @@ public class PushTask {
     @Scheduled(cron = "${vitalsign.push.cron:0 0/2 * * * ?}")
     public void execute() {
         if (!autoEnabled) {
-            log.debug("VITALSIGN_AUTO_DISABLED 自动推送已关闭");
+            log.warn("PUSH_SKIPPED autoEnabled=false, 自动推送已关闭, 跳过本轮");
             return;
         }
+        log.info("PUSH_TRIGGERED cron触发开始推送");
         pushOnce(TraceIdGenerator.generate());
     }
 

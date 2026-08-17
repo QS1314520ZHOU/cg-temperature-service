@@ -1,6 +1,8 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import org.bson.Document;
 import org.springframework.stereotype.Component;
@@ -10,20 +12,14 @@ import java.time.LocalDateTime;
 /**
  * 总出量处理器
  *
- * 业务目的：处理总出量汇总（动态获取出量代码）
+ * 业务目的：处理总出量汇总（固定七项 + 引流通配，去重）
+ * 源数据：调度层合计后以虚拟 Document 传入（strVal 为合计值）
  * 输出：vitalsignName=总出量, vitalsignType=1010, unit=ml
- *
- * 动态获取出量代码逻辑：
- *   1. 根据patient Mongo _id查询bedsideConfig.pid
- *   2. groupName必须为"出入量"
- *   3. 找到groups.name="出量"
- *   4. 遍历groups.items
- *   5. 将item.code与configParam.code关联
- *   6. 只保留configParam.calculation="out"
- *   7. 加入有效管道动态代码
  */
 @Component
 public class TotalOutputHandler extends BaseVitalSignHandler {
+    @Autowired
+    private MongoTemplate mongoTemplate;
 
     public TotalOutputHandler(PatientIdentityMapper patientIdentityMapper) {
         super(patientIdentityMapper);
@@ -31,12 +27,31 @@ public class TotalOutputHandler extends BaseVitalSignHandler {
 
     @Override
     public VitalSignPayload handle(Document bedside, Document patient, LocalDateTime planTime, String traceId) {
-        // 总出量由调度层计算后传入，此handler仅负责构建payload
-        return null;
+        if (bedside == null) {
+            return null;
+        }
+
+        String strVal = getValueFromDocByKey(bedside, "strVal", String.class);
+        Double value = parseDouble(strVal);
+
+        if (value == null) {
+            log.warn("STEP_05_VALUE_PARSED traceId={} 无法解析总出量值: {}", traceId, strVal);
+            return null;
+        }
+
+        VitalSignPayload payload = VitalSignPayload.builder()
+                .vitalsignName("总出量")
+                .vitalsignType("1010")
+                .vitalsignNVal1(formatDouble(value))
+                .unit("ml")
+                .build();
+
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId);
+        return payload;
     }
 
     /**
-     * 构建总出量payload
+     * 构建总出量payload（供 Controller 手动扫描端点使用）
      */
     public VitalSignPayload buildPayload(Double totalValue, Document patient, LocalDateTime planTime, String traceId) {
         if (totalValue == null || totalValue == 0) {

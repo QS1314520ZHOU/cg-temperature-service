@@ -61,6 +61,17 @@ public class DailySummaryTask {
     private static final Logger log = LoggerFactory.getLogger(DailySummaryTask.class);
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
+    /** 总出量(1010)固定七项代码 */
+    private static final List<String> OUTPUT_FIXED_CODES = Arrays.asList(
+            "param_niaoLiang",
+            "param_daBianAmount",
+            "param_outuwuliang",
+            "param_造瘘口量",
+            "param_咯血",
+            "param_tanLiang",
+            "param_tube_胃肠减压"
+    );
+
     /** 病区编码，与 VitalSignScanTask 统一使用同一配置项 */
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
@@ -133,9 +144,10 @@ public class DailySummaryTask {
     @Scheduled(cron = "${vitalsign.summary.cron:0 0 7 * * ?}")
     public void execute() {
         if (!autoEnabled) {
-            log.debug("VITALSIGN_AUTO_DISABLED 自动汇总已关闭，跳过定时汇总");
+            log.warn("SUMMARY_SKIPPED autoEnabled=false, 自动汇总已关闭, 跳过本轮");
             return;
         }
+        log.info("SUMMARY_TRIGGERED cron触发开始每日汇总");
         doSummary();
     }
 
@@ -320,18 +332,36 @@ public class DailySummaryTask {
     private void enqueue(BaseVitalSignHandler handler, Document doc, Document patient,
                          ClinicalTimeWindow window, String traceId) {
         VitalSignPayload payload = handler.handle(doc, patient, window.getReportDate(), traceId);
-        if (payload != null) {
-            PayloadTimeNormalizer.anchor(payload, window.getReportDate());
-            intermediateService.upsertPending(payload, traceId);
-            enqueueCounter.incrementAndGet();
+        if (payload == null) {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            String pid = getValueFromDocByKey(patient, "_id", String.class);
+            log.warn("ENQUEUE_NULL traceId={} handler={} code={} pid={} 返回null，未入队",
+                    traceId, handler.getClass().getSimpleName(), code, pid);
+            return;
         }
+        PayloadTimeNormalizer.anchor(payload, window.getReportDate());
+        intermediateService.upsertPending(payload, traceId);
+        enqueueCounter.incrementAndGet();
     }
 
     /**
-     * 安全累加
+     * 按多个code求和
      */
-    private BigDecimal sum(BigDecimal a, BigDecimal b) {
-        return a.add(b);
+    private BigDecimal sumByCodes(List<Document> records, List<String> codes) {
+        return records.stream()
+                .filter(doc -> {
+                    String code = getValueFromDocByKey(doc, "code", String.class);
+                    return code != null && codes.contains(code);
+                })
+                .map(doc -> {
+                    String val = getValueFromDocByKey(doc, "strVal", String.class);
+                    try {
+                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
+                    } catch (NumberFormatException e) {
+                        return BigDecimal.ZERO;
+                    }
+                })
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /**
@@ -361,55 +391,43 @@ public class DailySummaryTask {
 
     /**
      * 处理饮入量、治疗输入量、总输入量
+     * 饮入量(1044) = param_biSi + param_YaoStomach_in_hour + param_YaoShuXue_in_hour
+     * 输入量(1045) = param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour
+     * 总入量(1009) = 六项去重求和（param_YaoShuXue_in_hour 不重复计算）
      */
     private void processIntakeAndOutput(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId) {
         List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
-        BigDecimal oralTotal = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && oralCodes.contains(code);
-                })
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
         List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
-        BigDecimal therapyTotal = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && therapyCodes.contains(code);
-                })
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // 饮入量
+        // 合并去重：六项唯一代码
+        List<String> allInputCodes = new ArrayList<>(oralCodes);
+        for (String c : therapyCodes) {
+            if (!allInputCodes.contains(c)) {
+                allInputCodes.add(c);
+            }
+        }
+
+        // 按各代码分别求和（用于1044/1045独立推送）
+        BigDecimal oralTotal = sumByCodes(records, oralCodes);
+        BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
+
+        // 总入量 = 六项去重求和（避免 param_YaoShuXue_in_hour 重复）
+        BigDecimal totalInput = sumByCodes(records, allInputCodes);
+
+        // 饮入量 1044
         if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
-            Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_kouFu", window);
+            Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_biSi", window);
             enqueue(oralIntakeHandler, vDoc, patient, window, traceId);
         }
 
-        // 治疗输入量
+        // 输入量 1045
         if (therapyTotal.compareTo(BigDecimal.ZERO) > 0) {
             Document vDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
             enqueue(therapyInputHandler, vDoc, patient, window, traceId);
         }
 
-        // 总输入量
-        BigDecimal totalInput = sum(oralTotal, therapyTotal);
+        // 总入量 1009
         if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
             Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
             enqueue(totalInputHandler, vDoc, patient, window, traceId);
@@ -417,31 +435,41 @@ public class DailySummaryTask {
     }
 
     /**
-     * 处理总出量（动态配置）
+     * 处理总出量（固定七项 + 引流通配）
+     * 总出量(1010) = 尿量 + 大便量 + 呕吐物量 + 造瘘口量 + 咯血量 + 痰量 + 胃肠减压
+     *              + 所有 code 含 "_tube_" 的记录
+     * 去重：param_tube_胃肠减压 同时命中固定项和通配，Set 自动去重
      */
     private void processTotalOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId) {
-        // 动态获取出量代码：查询bedsideConfig → configParam.calculation=out
-        List<String> outputCodes = getDynamicOutputCodes(pid, traceId);
-        if (outputCodes.isEmpty()) {
-            log.info("STEP_05_VALUE_PARSED traceId={} pid={} 无动态出量配置", traceId, pid);
-            return;
+        BigDecimal total = BigDecimal.ZERO;
+        java.util.Set<String> counted = new java.util.HashSet<>();
+
+        // 固定七项
+        for (Document doc : records) {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            if (code != null && OUTPUT_FIXED_CODES.contains(code) && counted.add(code)) {
+                String val = getValueFromDocByKey(doc, "strVal", String.class);
+                try {
+                    if (val != null) total = total.add(new BigDecimal(val.trim()));
+                } catch (NumberFormatException e) {
+                    // skip
+                }
+            }
         }
 
-        BigDecimal total = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && outputCodes.contains(code);
-                })
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // 引流通配：code 含 "_tube_"（param_tube_胃肠减压 已在固定项中，Set 自动去重）
+        for (Document doc : records) {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            if (code != null && code.contains("_tube_") && counted.add(code)) {
+                String val = getValueFromDocByKey(doc, "strVal", String.class);
+                try {
+                    if (val != null) total = total.add(new BigDecimal(val.trim()));
+                } catch (NumberFormatException e) {
+                    // skip
+                }
+            }
+        }
 
         if (total.compareTo(BigDecimal.ZERO) > 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
@@ -546,52 +574,6 @@ public class DailySummaryTask {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
             enqueue(netUltrafiltrationHandler, vDoc, patient, window, traceId);
         }
-    }
-
-    /**
-     * 动态获取出量代码
-     * 查询bedsideConfig → configParam.calculation=out
-     */
-    private List<String> getDynamicOutputCodes(String pid, String traceId) {
-        try {
-            // 查询bedsideConfig
-            Query configQuery = new Query(Criteria.where("pid").is(pid)
-                    .and("groupName").is("出入量"));
-            Document config = mongoTemplate.findOne(configQuery, Document.class, "bedsideConfig");
-            if (config == null) {
-                return Collections.emptyList();
-            }
-
-            // 获取出量配置
-            @SuppressWarnings("unchecked")
-            List<Document> groups = (List<Document>) config.get("groups");
-            if (groups == null) return Collections.emptyList();
-
-            for (Document group : groups) {
-                if ("出量".equals(group.getString("name"))) {
-                    @SuppressWarnings("unchecked")
-                    List<Document> items = (List<Document>) group.get("items");
-                    if (items == null) continue;
-
-                    List<String> codes = new ArrayList<>();
-                    for (Document item : items) {
-                        String code = item.getString("code");
-                        if (code != null) {
-                            // 查询configParam验证calculation=out
-                            Query paramQuery = new Query(Criteria.where("code").is(code));
-                            Document param = mongoTemplate.findOne(paramQuery, Document.class, "configParam");
-                            if (param != null && "out".equals(param.getString("calculation"))) {
-                                codes.add(code);
-                            }
-                        }
-                    }
-                    return codes;
-                }
-            }
-        } catch (Exception e) {
-            log.error("STEP_05_VALUE_PARSED traceId={} 获取动态出量配置失败 pid={}", traceId, pid, e);
-        }
-        return Collections.emptyList();
     }
 
     /**

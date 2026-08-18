@@ -365,7 +365,7 @@ public class VitalSignScanTask {
                 intermediateService.upsertPending(hwPayload, patientTraceId);
                 log.info("ADMISSION_VITALS traceId={} pid={} {}={} planTime={} 入科身高体重回传完成",
                         patientTraceId, pid, hwPayload.getVitalsignName(),
-                        hwPayload.getVitalsignNVal1(), hwPayload.getPlanTime());
+                        hwPayload.getVitalsignSVal1(), hwPayload.getPlanTime());
             }
         } catch (Exception e) {
             log.error("ADMISSION_HW traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);

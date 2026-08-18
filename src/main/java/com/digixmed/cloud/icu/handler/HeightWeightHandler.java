@@ -32,7 +32,7 @@ import java.util.function.BiConsumer;
  * 源数据：Mongo dFormData 中的 fieldDataList 数组
  * 输出：
  *   - 身高：vitalsignType=1013, unit=cm, 值放 vitalsignSVal1
- *   - 体重：vitalsignType=1014, unit=kg, 值放 vitalsignNVal1
+ *   - 体重：vitalsignType=1014, unit=kg, 值放 vitalsignSVal1
  *
  * 回传时机：
  *   - 入科当天（pageDayIndex=0）：由 VitalSignScanTask 的入科扫描负责，
@@ -55,13 +55,13 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     /**
      * 身高体重差异项
      *
-     * R1: 身高(1013) 值放 vitalsignSVal1；体重(1014) 值放 vitalsignNVal1
+     * R1: 身高(1013) 和 体重(1014) 值均放 vitalsignSVal1
      */
     private enum Metric {
         HEIGHT("身高", "1013", "cm", Collections.singletonList("sg"),
                 VitalSignPayload::setVitalsignSVal1),
         WEIGHT("体重", "1014", "kg", Collections.singletonList("tz"),
-                VitalSignPayload::setVitalsignNVal1);
+                VitalSignPayload::setVitalsignSVal1);
 
         private final String name;
         private final String type;

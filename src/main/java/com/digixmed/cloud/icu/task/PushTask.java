@@ -34,7 +34,7 @@ public class PushTask {
     private static final Logger log = LoggerFactory.getLogger(PushTask.class);
 
     /** 单线程调度下不要设太大：批量 * 读超时 = 最坏阻塞时长 */
-    private static final int MAX_BATCH_PER_ROUND = 20;
+    private static final int MAX_BATCH_PER_ROUND = 10;
 
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 

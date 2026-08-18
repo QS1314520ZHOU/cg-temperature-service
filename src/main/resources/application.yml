@@ -39,7 +39,7 @@ vitalsign:
   scan:
     # 回看窗口（小时）：生成需要扫描的标准时间点，覆盖护士事后补录场景
     # 26 小时可覆盖"凌晨补昨晚 22:00"，按需调大
-    lookback-hours: ${VITALSIGN_SCAN_LOOKBACK_HOURS:26}
+    lookback-hours: ${VITALSIGN_SCAN_LOOKBACK_HOURS:14}
     # 血压 07:00 槽位回看天数
     bp-lookback-days: ${VITALSIGN_SCAN_BP_LOOKBACK_DAYS:1}
     # 入科首条回传回看天数
@@ -78,7 +78,7 @@ digixmed:
   isUpload: true
   testPid: all
   rcron: 0 0/2 * * * ?
-  cron: 0 0/1 * * * ?
+  cron: 0 0/5 * * * ?
   deleteDay: 180
   backDay: 1
   timePointasd: 7

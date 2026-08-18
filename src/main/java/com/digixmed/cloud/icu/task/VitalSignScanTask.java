@@ -26,11 +26,14 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -141,28 +144,29 @@ public class VitalSignScanTask {
             log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}小时，需扫描标准时间点数量={} 时间点={}",
                     traceId, scanLookbackHours, scanPoints.size(), scanPoints);
 
-            // 收集所有精确时刻的候选患者（去重）
+            // 批量收集所有时间点的候选pid（一次查询，而非每个时间点单独查）
             List<String> vitalCodes = Arrays.asList(
                     CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH, CODE_PAIN);
-
-            Set<String> allPids = new LinkedHashSet<>();
-            for (LocalDateTime point : scanPoints) {
-                allPids.addAll(findPidsAtPoint(point, vitalCodes));
-            }
+            Set<String> allPids = findPidsAtPoints(scanPoints, vitalCodes);
             log.info("STEP_01_PATIENT_SELECTED traceId={} 本轮候选患者数量={}", traceId, allPids.size());
 
-            for (String pid : allPids) {
-                Document patient = findMongoPatientByPid(pid);
-                if (patient == null) {
-                    log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
-                    continue;
-                }
+            if (!allPids.isEmpty()) {
+                // 批量查询所有患者（一次 $in 查询，而非逐个 findOne）
+                Map<String, Document> patientMap = findPatientsByPids(allPids);
 
-                for (LocalDateTime point : scanPoints) {
-                    ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
-                            point.toLocalDate(), point.getHour());
-                    if (window != null) {
-                        processPatientByPid(pid, patient, point, window, traceId);
+                for (String pid : allPids) {
+                    Document patient = patientMap.get(pid);
+                    if (patient == null) {
+                        log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
+                        continue;
+                    }
+
+                    for (LocalDateTime point : scanPoints) {
+                        ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(
+                                point.toLocalDate(), point.getHour());
+                        if (window != null) {
+                            processPatientByPid(pid, patient, point, window, traceId);
+                        }
                     }
                 }
             }
@@ -580,7 +584,62 @@ public class VitalSignScanTask {
         return Criteria.where("time").gte(start).lt(end);
     }
 
-    /** 该标准时刻有数据的患者 pid 集合 */
+    /**
+     * 批量查询多个时间点的候选pid（一次查询）
+     *
+     * 原实现每个时间点单独查 bedside.findDistinct，6个时间点 = 6次查询。
+     * 改为 $or 合并所有时间点条件，一次查询返回全部 pid。
+     */
+    private Set<String> findPidsAtPoints(List<LocalDateTime> points, List<String> codes) {
+        if (points == null || points.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        Criteria timeOr = new Criteria().orOperator(
+                points.stream().map(this::exactTimeCriteria).toArray(Criteria[]::new));
+
+        Query query = new Query(new Criteria().andOperator(
+                Criteria.where("code").in(codes),
+                Criteria.where("valid").ne(false),
+                timeOr));
+
+        return new LinkedHashSet<>(
+                mongoTemplate.findDistinct(query, "pid", "bedside", String.class));
+    }
+
+    /**
+     * 批量查询患者（一次 $in 查询）
+     *
+     * 原实现逐个 findMongoPatientByPid，N个患者 = N次查询。
+     * 改为 $in 一次查回，以 _id 为 key 构建 Map。
+     */
+    private Map<String, Document> findPatientsByPids(Set<String> pids) {
+        List<ObjectId> ids = new ArrayList<>();
+        for (String pid : pids) {
+            try {
+                ids.add(new ObjectId(pid));
+            } catch (IllegalArgumentException e) {
+                log.warn("findPatientsByPids pid={} 不是合法ObjectId，跳过", pid);
+            }
+        }
+        if (ids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Query query = new Query(Criteria.where("_id").in(ids));
+        List<Document> patients = mongoTemplate.find(query, Document.class, "patient");
+
+        Map<String, Document> map = new LinkedHashMap<>();
+        for (Document p : patients) {
+            Object id = p.get("_id");
+            if (id != null) {
+                map.put(id.toString(), p);
+            }
+        }
+        return map;
+    }
+
+    /** 单个时间点的pid查询（血压等低频场景使用） */
     private Set<String> findPidsAtPoint(LocalDateTime point, List<String> codes) {
         Query query = new Query(Criteria.where("code").in(codes)
                 .and("valid").ne(false)

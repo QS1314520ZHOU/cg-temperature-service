@@ -53,8 +53,8 @@ vitalsign:
   summary:
     # 每天 08:00 执行一次汇总（只处理昨天的出入量）
     cron: ${VITALSIGN_SUMMARY_CRON:0 0 8 * * ?}
-    # 变化检测：每小时检查昨天数据是否变化，变化则撤销重发
-    check-cron: ${VITALSIGN_SUMMARY_CHECK_CRON:0 10 * * * ?}
+    # 变化检测：每小时检查昨天数据是否变化，变化则撤销重发（09:00~次日06:00）
+    check-cron: ${VITALSIGN_SUMMARY_CHECK_CRON:0 0 9-23,0-6 * * ?}
     # 汇总回看天数（报表日）
     lookback-days: ${VITALSIGN_SUMMARY_LOOKBACK_DAYS:1}
   patient:

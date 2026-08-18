@@ -213,7 +213,7 @@ public class DailySummaryTask {
      *   - hash 相同 + SUCCESS → SKIP（不重复推送）
      *   - hash 不同 → 设 FAILED → PushTask 自动走两步流程（isValid=0 旧值 → isValid=1 新值）
      */
-    @Scheduled(cron = "${vitalsign.summary.check-cron:0 10 * * * ?}")
+    @Scheduled(cron = "${vitalsign.summary.check-cron:0 0 9-23,0-6 * * ?}")
     public void checkAndResendScheduled() {
         if (!autoEnabled) {
             return;

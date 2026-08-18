@@ -67,8 +67,8 @@ public class DailySummaryTask {
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
 
-    /** 汇总扫描频率 */
-    @Value("${vitalsign.summary.cron:0 0 7 * * ?}")
+    /** 汇总扫描频率：每天 08:00 执行一次 */
+    @Value("${vitalsign.summary.cron:0 0 8 * * ?}")
     private String summaryCron;
 
     /** 汇总回看天数（报表日） */
@@ -152,11 +152,14 @@ public class DailySummaryTask {
     public void doSummary() {
         String traceId = TraceIdGenerator.generate();
         LocalDateTime now = timeWindowService.now();
+        LocalDate today = now.toLocalDate();
         log.info("STEP_01_PATIENT_SELECTED traceId={} 开始每日汇总 now={}", traceId, now);
 
         try {
-            // 获取需要处理的报表日列表（含回看）
+            // 只处理昨天及以前的报表日，不处理今天（今天的窗口明天才关闭）
             List<LocalDate> reportDates = timeWindowService.getSummaryReportDates(now, summaryLookbackDays);
+            // 过滤掉 today：今天的出入量窗口 [today 07:00, today+1 07:00) 尚未关闭
+            reportDates.removeIf(d -> !d.isBefore(today));
             log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}天，需处理报表日数量={} 日期={}",
                     traceId, summaryLookbackDays, reportDates.size(), reportDates);
 
@@ -185,6 +188,52 @@ public class DailySummaryTask {
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总完成", traceId);
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总异常", traceId, e);
+        }
+    }
+
+    // ======================== 变化检测（每小时） ========================
+
+    /**
+     * 每小时变化检测：重新计算昨天的出入量，如有变化则通过 upsertPending 触发撤销重发
+     *
+     * 执行时间：09:00 ~ 次日 06:00 每小时一次
+     * 不在 07:00~08:59 执行，因为这段时间由 doSummary 主流程负责
+     *
+     * 原理：复用 processPatientSummary，upsertPending 内部比对 payloadHash：
+     *   - hash 相同 + SUCCESS → SKIP（不重复推送）
+     *   - hash 不同 → 设 FAILED → PushTask 自动走两步流程（isValid=0 旧值 → isValid=1 新值）
+     */
+    @Scheduled(cron = "${vitalsign.summary.check-cron:0 0 9-23,0-6 * * ?}")
+    public void checkAndResendScheduled() {
+        if (!autoEnabled) {
+            return;
+        }
+        String traceId = TraceIdGenerator.generate();
+        log.info("CHECK_RESEND traceId={} 开始变化检测", traceId);
+
+        try {
+            LocalDate today = timeWindowService.today();
+            LocalDate yesterday = today.minusDays(1);
+            ClinicalTimeWindow window = timeWindowService.buildDailyWindow(yesterday);
+
+            List<String> pids = findCandidatePids(window, traceId);
+            log.info("CHECK_RESEND traceId={} 日期={} 候选患者数量={}", traceId, yesterday, pids.size());
+
+            if (pids.isEmpty()) {
+                return;
+            }
+
+            Map<String, Document> patientMap = findMongoPatientsByPids(pids);
+
+            for (String pid : pids) {
+                Document patient = patientMap.get(pid);
+                if (patient == null) continue;
+                processPatientSummary(pid, patient, window, yesterday, traceId);
+            }
+
+            log.info("CHECK_RESEND traceId={} 变化检测完成", traceId);
+        } catch (Exception e) {
+            log.error("CHECK_RESEND traceId={} 变化检测异常", traceId, e);
         }
     }
 

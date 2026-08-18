@@ -109,7 +109,7 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     // ======================== 新公开 API ========================
 
     /**
-     * 入科首次构建（R2: planTime=recordTime=icuAdmissionTime）
+     * 入科首次构建（planTime=recordTime=icuAdmissionTime + 1小时）
      *
      * @param patient           MongoDB patient 文档
      * @param admissionDateTime icuAdmissionTime 原始值（不可变时间点）
@@ -130,11 +130,11 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return Collections.emptyList();
         }
 
-        // R2: planTime=recordTime=admissionDateTime，不调 PayloadTimeNormalizer
+        // 入科第一条：planTime=recordTime=icuAdmissionTime + 1小时
+        LocalDateTime sendTime = admissionDateTime.plusHours(1);
         return buildPair(patient, pid, formData, nurse, traceId, timeNormalizer -> {
-            // 入科模式：不做时间归一化，直接返回 admissionDateTime
-            return admissionDateTime;
-        }, admissionDateTime);
+            return sendTime;
+        }, sendTime);
     }
 
     /**

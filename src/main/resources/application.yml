@@ -81,8 +81,8 @@ digixmed:
   isUpload: true
   testPid: all
   rcron: 0 0/2 * * * ?
-  # 生命体征扫描：每个标准时间点后10分钟（给护士留录入时间）
-  cron: 0 10 2,6,10,14,18,22 * * ?
+  # 生命体征扫描：每小时10分执行（含标准点+每小时比对）
+  cron: 0 10 * * * ?
   deleteDay: 180
   backDay: 1
   timePointasd: 7

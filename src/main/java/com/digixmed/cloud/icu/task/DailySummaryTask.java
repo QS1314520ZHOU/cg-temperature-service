@@ -169,8 +169,11 @@ public class DailySummaryTask {
                 List<String> pids = findCandidatePids(window, traceId);
                 log.info("STEP_01_PATIENT_SELECTED traceId={} 报表日={} 候选患者数量={}", traceId, reportDate, pids.size());
 
+                // O3: 批量查询患者（一次 $in 替代 N 次单条查询）
+                Map<String, Document> patientMap = findMongoPatientsByPids(pids);
+
                 for (String pid : pids) {
-                    Document patient = findMongoPatientByPid(pid);
+                    Document patient = patientMap.get(pid);
                     if (patient == null) {
                         log.info("STEP_01_PATIENT_SKIPPED traceId={} pid={} patient集合中不存在该_id，不回传", traceId, pid);
                         continue;
@@ -257,21 +260,25 @@ public class DailySummaryTask {
             // 净超滤量
             processNetUltrafiltration(records, patient, pid, window, patientTraceId);
 
-            // 身高体重（检查是否需要发送）
-            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, reportDate, patient)) {
-                LocalDateTime sendTime = window.getEnd();
-                NurseRef nurse = heightWeightNurseService.resolve(pid);
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
-                        patient, sendTime, nurse, patientTraceId);
-                if (heightPayload != null) {
-                    PayloadTimeNormalizer.anchor(heightPayload, sendTime);
-                    intermediateService.upsertPending(heightPayload, patientTraceId);
-                }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(
-                        patient, sendTime, nurse, patientTraceId);
-                if (weightPayload != null) {
-                    PayloadTimeNormalizer.anchor(weightPayload, sendTime);
-                    intermediateService.upsertPending(weightPayload, patientTraceId);
+            // 身高体重（R3: 以 admission_ward_time 为基准，7天周期）
+            com.digixmed.cloud.icu.model.InpatientDTO inpatient = null;
+            try {
+                inpatient = inpatientRepository.findByPatientId(hisPatientId);
+            } catch (Exception e) {
+                log.warn("STEP_12_HW traceId={} patientId={} 查入科时间失败: {}", patientTraceId, maskPatientId(hisPatientId), e.getMessage());
+            }
+            if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
+                LocalDateTime admissionWardTime = inpatient.getAdmissionWardTime();
+                java.util.Optional<LocalDateTime> sendTimeOpt = heightWeightHandler.planFor(
+                        admissionWardTime, reportDate, timeWindowService.now());
+                if (sendTimeOpt.isPresent()) {
+                    LocalDateTime sendTime = sendTimeOpt.get();
+                    List<VitalSignPayload> hwPayloads = heightWeightHandler.buildPeriodic(
+                            pid, admissionWardTime, sendTime, patientTraceId);
+                    for (VitalSignPayload hwPayload : hwPayloads) {
+                        intermediateService.upsertPending(hwPayload, patientTraceId);
+                        enqueueCounter.incrementAndGet();
+                    }
                 }
             }
 
@@ -588,6 +595,46 @@ public class DailySummaryTask {
         } catch (Exception e) {
             log.warn("findMongoPatientByPid pid={} 查询异常: {}", pid, e.getMessage());
             return null;
+        }
+    }
+
+    /** O3: 批量查询 MongoDB patient 文档（一次 $in 替代 N 次单条查询） */
+    private Map<String, Document> findMongoPatientsByPids(List<String> pids) {
+        if (pids == null || pids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<org.bson.types.ObjectId> objectIds = new java.util.ArrayList<>();
+        for (String pid : pids) {
+            try {
+                objectIds.add(new org.bson.types.ObjectId(pid));
+            } catch (Exception e) {
+                log.warn("findMongoPatientsByPids pid={} ObjectId转换失败，跳过", pid);
+            }
+        }
+        if (objectIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        try {
+            Query query = new Query(Criteria.where("_id").in(objectIds));
+            List<Document> patients = mongoTemplate.find(query, Document.class, "patient");
+            Map<String, Document> map = new java.util.LinkedHashMap<>();
+            for (Document p : patients) {
+                Object id = p.get("_id");
+                if (id != null) {
+                    map.put(id.toString(), p);
+                }
+            }
+            log.info("批量查询患者完成，请求{}条，返回{}条", objectIds.size(), map.size());
+            return map;
+        } catch (Exception e) {
+            log.warn("findMongoPatientsByPids 批量查询异常: {}", e.getMessage());
+            // 降级为逐条查询
+            Map<String, Document> map = new java.util.LinkedHashMap<>();
+            for (String pid : pids) {
+                Document p = findMongoPatientByPid(pid);
+                if (p != null) map.put(pid, p);
+            }
+            return map;
         }
     }
 

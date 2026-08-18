@@ -353,25 +353,19 @@ public class VitalSignScanTask {
             log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，身高体重将使用默认记录者", patientTraceId, pid);
         }
 
-        // 3. 锁定记录者并处理身高体重（planTime 锚定入科当天 07:00）
+        // 3. 锁定记录者并处理身高体重（R2: planTime=recordTime=icuAdmissionTime）
         String nurseId = tempPayload != null ? tempPayload.getRecordNurseId() : null;
         String nurseName = tempPayload != null ? tempPayload.getRecordNurseName() : null;
         NurseRef nurse = heightWeightNurseService.pin(pid, nurseId, nurseName, "ADMISSION");
-        LocalDateTime hwPlanTime = admissionPlanTime.toLocalDate().atTime(7, 0);
+        // R2: planTime=recordTime=admissionDateTime（不可变时间点），不锚定 07:00
         try {
-            VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(
-                    patient, hwPlanTime, nurse, patientTraceId);
-            if (heightPayload != null) {
-                PayloadTimeNormalizer.anchor(heightPayload, hwPlanTime);
-                intermediateService.upsertPending(heightPayload, patientTraceId);
-                log.info("ADMISSION_VITALS traceId={} pid={} 身高处理完成 nurse={}", patientTraceId, pid, nurse.getName());
-            }
-            VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(
-                    patient, hwPlanTime, nurse, patientTraceId);
-            if (weightPayload != null) {
-                PayloadTimeNormalizer.anchor(weightPayload, hwPlanTime);
-                intermediateService.upsertPending(weightPayload, patientTraceId);
-                log.info("ADMISSION_VITALS traceId={} pid={} 体重处理完成 nurse={}", patientTraceId, pid, nurse.getName());
+            List<VitalSignPayload> hwPayloads = heightWeightHandler.buildAdmissionFirst(
+                    patient, admissionDateTime, nurse, patientTraceId);
+            for (VitalSignPayload hwPayload : hwPayloads) {
+                intermediateService.upsertPending(hwPayload, patientTraceId);
+                log.info("ADMISSION_VITALS traceId={} pid={} {}={} planTime={} 入科身高体重回传完成",
+                        patientTraceId, pid, hwPayload.getVitalsignName(),
+                        hwPayload.getVitalsignNVal1(), hwPayload.getPlanTime());
             }
         } catch (Exception e) {
             log.error("ADMISSION_HW traceId={} pid={} 身高体重处理异常", patientTraceId, pid, e);
@@ -398,8 +392,11 @@ public class VitalSignScanTask {
 
             log.info("STEP_BP traceId={} 日期={} 07:00槽位收缩压患者数量={}", traceId, slotDate, pids.size());
 
+            // O8: 批量查询患者（一次 $in 替代 N 次单条查询）
+            Map<String, Document> patientMap = findMongoPatientsByPids(pids);
+
             for (String pid : pids) {
-                Document patient = findMongoPatientByPid(pid);
+                Document patient = patientMap.get(pid);
                 if (patient == null) {
                     continue;
                 }
@@ -555,6 +552,47 @@ public class VitalSignScanTask {
         } catch (Exception e) {
             log.warn("findMongoPatientByPid pid={} 查询异常: {}", pid, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * O8: 批量查询 MongoDB patient 文档（一次 $in 替代 N 次单条查询）
+     */
+    private Map<String, Document> findMongoPatientsByPids(Set<String> pids) {
+        if (pids == null || pids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<org.bson.types.ObjectId> objectIds = new java.util.ArrayList<>();
+        for (String pid : pids) {
+            try {
+                objectIds.add(new org.bson.types.ObjectId(pid));
+            } catch (Exception e) {
+                log.warn("findMongoPatientsByPids pid={} ObjectId转换失败，跳过", pid);
+            }
+        }
+        if (objectIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        try {
+            Query query = new Query(Criteria.where("_id").in(objectIds));
+            List<Document> patients = mongoTemplate.find(query, Document.class, "patient");
+            Map<String, Document> map = new java.util.LinkedHashMap<>();
+            for (Document p : patients) {
+                Object id = p.get("_id");
+                if (id != null) {
+                    map.put(id.toString(), p);
+                }
+            }
+            log.info("批量查询患者完成，请求{}条，返回{}条", objectIds.size(), map.size());
+            return map;
+        } catch (Exception e) {
+            log.warn("findMongoPatientsByPids 批量查询异常，降级为逐条查询: {}", e.getMessage());
+            Map<String, Document> map = new java.util.LinkedHashMap<>();
+            for (String pid : pids) {
+                Document p = findMongoPatientByPid(pid);
+                if (p != null) map.put(pid, p);
+            }
+            return map;
         }
     }
 

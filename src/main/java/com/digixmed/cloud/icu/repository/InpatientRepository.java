@@ -9,8 +9,8 @@ import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 在院患者Repository
@@ -100,6 +100,54 @@ public class InpatientRepository {
         } catch (Exception e) {
             log.error("查询患者失败，patientId={}", maskPatientId(patientId), e);
             return null;
+        }
+    }
+
+    /**
+     * 批量按住院号查询患者（O1: 减少 DB 调用频次）
+     *
+     * @param patientIds 住院号集合
+     * @return patientId -> InpatientDTO 映射
+     */
+    public Map<String, InpatientDTO> findByPatientIds(Collection<String> patientIds) {
+        if (jdbcTemplate == null) {
+            log.warn("Kingbase JdbcTemplate未初始化，无法批量查询患者");
+            return Collections.emptyMap();
+        }
+        if (patientIds == null || patientIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        // 去重并过滤空值
+        List<String> uniqueIds = patientIds.stream()
+                .filter(id -> id != null && !id.trim().isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+        if (uniqueIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        try {
+            // 构建 IN 子句的占位符
+            String placeholders = uniqueIds.stream().map(id -> "?").collect(Collectors.joining(", "));
+            String sql = "SELECT patient_id, mrn, series, name, ward_code, status, " +
+                    "admission_time, admission_ward_time, discharge_time, height, weight " +
+                    "FROM " + SCHEMA + ".inpatients " +
+                    "WHERE patient_id IN (" + placeholders + ")";
+
+            List<InpatientDTO> result = jdbcTemplate.query(
+                    sql,
+                    new BeanPropertyRowMapper<>(InpatientDTO.class),
+                    uniqueIds.toArray()
+            );
+
+            Map<String, InpatientDTO> map = result.stream()
+                    .collect(Collectors.toMap(InpatientDTO::getPatientId, dto -> dto, (a, b) -> a));
+            log.info("批量查询在科患者成功，请求{}条，返回{}条", uniqueIds.size(), map.size());
+            return map;
+        } catch (Exception e) {
+            log.error("批量查询患者失败，count={}", uniqueIds.size(), e);
+            return Collections.emptyMap();
         }
     }
 

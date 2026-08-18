@@ -4,6 +4,7 @@ import com.digixmed.cloud.icu.handler.*;
 import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
+import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
@@ -59,6 +60,9 @@ public class Controller {
 
     @Autowired
     private PatientIdentityMapper patientIdentityMapper;
+
+    @Autowired
+    private InpatientRepository inpatientRepository;
 
     // 普通体征Handlers
     @Autowired
@@ -221,21 +225,15 @@ public class Controller {
                 totalSkipped += (int) admissionResult.getOrDefault("skipped", 0);
                 totalFailed += (int) admissionResult.getOrDefault("failed", 0);
 
-                // 身高体重
+                // 身高体重（R2: planTime=recordTime=icuAdmissionTime）
                 try {
-                    VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, admissionPlanTime, null, traceId);
-                    if (heightPayload != null) {
-                        String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
+                    List<VitalSignPayload> hwPayloads = heightWeightHandler.buildAdmissionFirst(
+                            patient, admissionDateTime, null, traceId);
+                    for (VitalSignPayload hwPayload : hwPayloads) {
+                        String action = (String) intermediateService.upsertPending(hwPayload, traceId).get("action");
                         if ("INSERT".equals(action)) totalInserted++;
                         else if ("SKIP".equals(action)) totalSkipped++;
-                        log.info("MANUAL_SCAN traceId={} 入科身高处理完成 action={}", traceId, action);
-                    }
-                    VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, admissionPlanTime, null, traceId);
-                    if (weightPayload != null) {
-                        String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
-                        if ("INSERT".equals(action)) totalInserted++;
-                        else if ("SKIP".equals(action)) totalSkipped++;
-                        log.info("MANUAL_SCAN traceId={} 入科体重处理完成 action={}", traceId, action);
+                        log.info("MANUAL_SCAN traceId={} 入科{}处理完成 action={}", traceId, hwPayload.getVitalsignName(), action);
                     }
                 } catch (Exception e) {
                     totalFailed++;
@@ -658,23 +656,29 @@ public class Controller {
             log.error("MANUAL_SCAN traceId={} 净超滤量处理异常", traceId, e);
         }
 
-        // 身高体重
+        // 身高体重（R3: 以 admission_ward_time 为基准，7天周期）
         try {
             String hisPatientId = patient.getString("mrn");
-            if (heightWeightHandler.shouldSendHeightWeight(hisPatientId, window.getStart().toLocalDate(), patient)) {
-                VitalSignPayload heightPayload = heightWeightHandler.buildHeightPayload(patient, planTimeDate, null, traceId);
-                if (heightPayload != null) {
-                    String action = (String) intermediateService.upsertPending(heightPayload, traceId).get("action");
-                    if ("INSERT".equals(action)) inserted++;
-                    else if ("SKIP".equals(action)) skipped++;
-                    items.add("身高:" + action);
-                }
-                VitalSignPayload weightPayload = heightWeightHandler.buildWeightPayload(patient, planTimeDate, null, traceId);
-                if (weightPayload != null) {
-                    String action = (String) intermediateService.upsertPending(weightPayload, traceId).get("action");
-                    if ("INSERT".equals(action)) inserted++;
-                    else if ("SKIP".equals(action)) skipped++;
-                    items.add("体重:" + action);
+            com.digixmed.cloud.icu.model.InpatientDTO inpatient = null;
+            try {
+                inpatient = inpatientRepository.findByPatientId(hisPatientId);
+            } catch (Exception ex) {
+                log.warn("MANUAL_SCAN traceId={} patientId={} 查入科时间失败: {}", traceId, hisPatientId, ex.getMessage());
+            }
+            if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
+                LocalDateTime admissionWardTime = inpatient.getAdmissionWardTime();
+                java.util.Optional<LocalDateTime> sendTimeOpt = heightWeightHandler.planFor(
+                        admissionWardTime, window.getStart().toLocalDate(), timeWindowService.now());
+                if (sendTimeOpt.isPresent()) {
+                    LocalDateTime hwSendTime = sendTimeOpt.get();
+                    List<VitalSignPayload> hwPayloads = heightWeightHandler.buildPeriodic(
+                            pid, admissionWardTime, hwSendTime, traceId);
+                    for (VitalSignPayload hwPayload : hwPayloads) {
+                        String action = (String) intermediateService.upsertPending(hwPayload, traceId).get("action");
+                        if ("INSERT".equals(action)) inserted++;
+                        else if ("SKIP".equals(action)) skipped++;
+                        items.add(hwPayload.getVitalsignName() + ":" + action);
+                    }
                 }
             }
         } catch (Exception e) {

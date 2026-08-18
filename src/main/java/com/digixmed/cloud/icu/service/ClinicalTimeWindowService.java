@@ -4,6 +4,7 @@ import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.ClinicalTimeWindow.WindowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 临床时间窗口服务
@@ -47,8 +49,13 @@ public class ClinicalTimeWindowService {
     /** 体温复测窗口长度（小时） */
     private static final long TEMPERATURE_RECHECK_HOURS = 1;
 
-    /** 身高体重分页天数 */
-    private static final int HEIGHT_WEIGHT_PAGE_DAYS = 7;
+    /** 身高体重分页天数（可配置，默认7） */
+    @Value("${vitalsign.height-weight.page-days:7}")
+    private int heightWeightPageDays = 7;
+
+    /** 身高体重周期性回传的发送小时（reportDate 的几点发送，默认7） */
+    @Value("${vitalsign.height-weight.send-hour:7}")
+    private int heightWeightSendHour = 7;
 
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -166,8 +173,8 @@ public class ClinicalTimeWindowService {
      */
     public ClinicalTimeWindow buildHeightWeightWindow(LocalDate admissionWardDate, LocalDate reportDate) {
         long pageDayIndex = ChronoUnit.DAYS.between(admissionWardDate, reportDate);
-        if (pageDayIndex > 0 && pageDayIndex % HEIGHT_WEIGHT_PAGE_DAYS == 0) {
-            LocalDateTime sendTime = LocalDateTime.of(reportDate, LocalTime.of(DAILY_SUMMARY_HOUR, 0, 0));
+        if (pageDayIndex > 0 && pageDayIndex % heightWeightPageDays == 0) {
+            LocalDateTime sendTime = LocalDateTime.of(reportDate, LocalTime.of(heightWeightSendHour, 0, 0));
             return ClinicalTimeWindow.builder()
                     .start(sendTime)
                     .end(sendTime)
@@ -290,5 +297,45 @@ public class ClinicalTimeWindowService {
 
     public boolean shouldSendHeightWeight(LocalDate admissionWardDate, LocalDate reportDate) {
         return buildHeightWeightWindow(admissionWardDate, reportDate) != null;
+    }
+
+    /**
+     * 身高体重周期性发送时间计算（R3 + 3.2）
+     *
+     * 逻辑：
+     *   1. admissionBaseDate = admissionWardTime.toLocalDate()
+     *   2. todayDate = now 在 Asia/Shanghai 的日期
+     *   3. actualReportDate = min(todayDate, reportDate)（不超前）
+     *   4. pageDayIndex = DAYS.between(admissionBaseDate, actualReportDate)
+     *   5. pageDayIndex > 0 && pageDayIndex % pageDays == 0 → 返回 actualReportDate sendHour:00
+     *
+     * @param admissionWardTime admission_ward_time（KingBase）
+     * @param reportDate        报表日期
+     * @param now               当前时间
+     * @return 发送时间（仅在应该发送时返回）
+     */
+    public Optional<LocalDateTime> resolveHeightWeightSendTime(LocalDateTime admissionWardTime,
+                                                                LocalDate reportDate,
+                                                                LocalDateTime now) {
+        if (admissionWardTime == null) {
+            return Optional.empty();
+        }
+
+        LocalDate admissionBaseDate = admissionWardTime.toLocalDate();
+        LocalDate todayDate = now.atZone(ZONE_SHANGHAI).toLocalDate();
+        LocalDate actualReportDate = todayDate.isBefore(reportDate) ? todayDate : reportDate;
+
+        long pageDayIndex = ChronoUnit.DAYS.between(admissionBaseDate, actualReportDate);
+
+        if (pageDayIndex <= 0 || pageDayIndex % heightWeightPageDays != 0) {
+            log.debug("身高体重不发送: pageDayIndex={} pageDays={} admission={} report={}",
+                    pageDayIndex, heightWeightPageDays, admissionBaseDate, actualReportDate);
+            return Optional.empty();
+        }
+
+        LocalDateTime sendTime = LocalDateTime.of(actualReportDate, LocalTime.of(heightWeightSendHour, 0, 0));
+        log.info("身高体重计划发送: pageDayIndex={} sendTime={} admission={} report={}",
+                pageDayIndex, sendTime, admissionBaseDate, actualReportDate);
+        return Optional.of(sendTime);
     }
 }

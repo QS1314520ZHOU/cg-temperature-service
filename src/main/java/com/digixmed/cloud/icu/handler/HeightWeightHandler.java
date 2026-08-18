@@ -7,6 +7,7 @@ import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService;
 import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
+import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,11 +19,11 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.BiConsumer;
 
 /**
@@ -30,47 +31,49 @@ import java.util.function.BiConsumer;
  *
  * 源数据：Mongo dFormData 中的 fieldDataList 数组
  * 输出：
- *   - 身高：vitalsignType=1013, unit=cm, 值放 vitalsignNVal1
- *   - 体重：vitalsignType=1014, unit=ml, 值放 vitalsignSVal1
+ *   - 身高：vitalsignType=1013, unit=cm, 值放 vitalsignSVal1
+ *   - 体重：vitalsignType=1014, unit=kg, 值放 vitalsignNVal1
  *
  * 回传时机：
  *   - 入科当天（pageDayIndex=0）：由 VitalSignScanTask 的入科扫描负责，
- *     与入科第一条生命体征一起回传，记录者与同批体温一致；
- *   - 之后：pageDayIndex > 0 且 % 7 == 0，由 DailySummaryTask 在 07:00 槽位回传。
+ *     planTime=recordTime=icuAdmissionTime，与入科第一条生命体征一起回传；
+ *   - 之后：pageDayIndex > 0 且 % 7 == 0，由 DailySummaryTask 在 reportDate 07:00 回传。
  *
  * 记录者：一律取 HeightWeightNurseService 锁定的记录者，
  *        即"入科第一条回传时对应体温的记录者"，之后永不变化。
  *
- * 入科日期解析：
- *   1. reportDate 与 patient.icuAdmissionTime 同一天 → 直接用 icuAdmissionTime；
- *   2. 不同一天 → 查 KingBase：
- *      select * from np_nis_cqchonggang.inpatients where patient_id = ?（patient_id = patient.mrn），
- *      取 admission_ward_time；
- *   3. 都拿不到 → 不回传，日志记录未获取到 admission_ward_time。
+ * 入科日期基准：以 KingBase inpatients.admission_ward_time 为唯一基准，
+ *   不再以 icuAdmissionTime 同天判断替代。
  *
- * 字段优先级：身高 sg, fg；体重 zt
+ * 字段优先级：身高 sg；体重 tz
  */
 @Component
 public class HeightWeightHandler extends BaseVitalSignHandler {
 
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
-    /** 身高体重差异项：除这三个参数外，取数、时间、记录者、公共字段完全共用 */
+    /**
+     * 身高体重差异项
+     *
+     * R1: 身高(1013) 值放 vitalsignSVal1；体重(1014) 值放 vitalsignNVal1
+     */
     private enum Metric {
-        HEIGHT("身高", "1013", Collections.singletonList("sg"),
-                (p, v) -> p.setVitalsignNVal1(v)),
-        WEIGHT("体重", "1014", Collections.singletonList("tz"),
-                (p, v) -> p.setVitalsignSVal1(v));
+        HEIGHT("身高", "1013", "cm", Collections.singletonList("sg"),
+                VitalSignPayload::setVitalsignSVal1),
+        WEIGHT("体重", "1014", "kg", Collections.singletonList("tz"),
+                VitalSignPayload::setVitalsignNVal1);
 
         private final String name;
         private final String type;
+        private final String unit;
         private final List<String> sourceFields;
         private final BiConsumer<VitalSignPayload, String> valueSetter;
 
-        Metric(String name, String type, List<String> sourceFields,
+        Metric(String name, String type, String unit, List<String> sourceFields,
                BiConsumer<VitalSignPayload, String> valueSetter) {
             this.name = name;
             this.type = type;
+            this.unit = unit;
             this.sourceFields = sourceFields;
             this.valueSetter = valueSetter;
         }
@@ -80,14 +83,6 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             "ruyuanhulipinggudan",
             "zhuanruhulipinggudan"
     );
-
-    /** 身高单位 */
-    @Value("${vitalsign.height-weight.height-unit:cm}")
-    private String heightUnit;
-
-    /** 体重单位：院方口径为 ml，联调确认后可改 kg */
-    @Value("${vitalsign.height-weight.weight-unit:ml}")
-    private String weightUnit;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -107,72 +102,149 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
 
     @Override
     public VitalSignPayload handle(Document bedside, Document patient, LocalDateTime planTime, String traceId) {
-        // 身高体重不走 bedside，统一由 buildHeightPayload / buildWeightPayload 构建
+        // 身高体重不走 bedside，统一由 buildAdmissionFirst / buildPeriodic 构建
         return null;
     }
 
-    public VitalSignPayload buildHeightPayload(Document patient, LocalDateTime planTime,
-                                               NurseRef nurse, String traceId) {
-        return build(patient, planTime, nurse, traceId, Metric.HEIGHT, heightUnit);
-    }
-
-    public VitalSignPayload buildWeightPayload(Document patient, LocalDateTime planTime,
-                                               NurseRef nurse, String traceId) {
-        return build(patient, planTime, nurse, traceId, Metric.WEIGHT, weightUnit);
-    }
+    // ======================== 新公开 API ========================
 
     /**
-     * 身高体重统一构建
+     * 入科首次构建（R2: planTime=recordTime=icuAdmissionTime）
      *
-     * 取数：patient._id == dFormData.pid
-     *      且 formCode ∈ (ruyuanhulipinggudan, zhuanruhulipinggudan)
-     *      取 fieldDataList 中 field == 约定字段 的 value
-     *
-     * 差异仅三处：源字段、单位、值落到 NVal1 还是 SVal1。
-     * 其余（planTime/recordTime = 当天07:00、series=1、wardCode=125011、
-     * patientId=mrn、mrn=hisPid、remark 空、isValid=1、记录者锁定）两者完全一致。
+     * @param patient           MongoDB patient 文档
+     * @param admissionDateTime icuAdmissionTime 原始值（不可变时间点）
+     * @param nurse             锁定的记录者（由调用方传入）
+     * @param traceId           追踪ID
+     * @return 身高和体重 payload 列表（可能只有一条或零条）
      */
-    private VitalSignPayload build(Document patient, LocalDateTime planTime, NurseRef nurse,
-                                   String traceId, Metric metric, String unit) {
+    public List<VitalSignPayload> buildAdmissionFirst(Document patient, LocalDateTime admissionDateTime,
+                                                      NurseRef nurse, String traceId) {
         String pid = readPid(patient);
         if (pid == null) {
-            return null;
+            return Collections.emptyList();
         }
 
         Document formData = findFormData(pid, traceId);
         if (formData == null) {
-            log.warn("STEP_04 traceId={} pid={} 未找到入院/转入护理评估单，{}不回传",
-                    traceId, pid, metric.name);
-            return null;
+            log.warn("ADMISSION_HW traceId={} pid={} 未找到入院/转入护理评估单，身高体重不回传", traceId, pid);
+            return Collections.emptyList();
         }
 
-        String value = extractFieldFromFormData(formData, metric.sourceFields);
-        if (value == null) {
-            log.warn("STEP_05_VALUE_PARSED traceId={} pid={} 评估单无{}字段或值为空 formCode={}",
-                    traceId, pid, metric.sourceFields, formData.getString("formCode"));
-            return null;
+        // R2: planTime=recordTime=admissionDateTime，不调 PayloadTimeNormalizer
+        return buildPair(patient, pid, formData, nurse, traceId, timeNormalizer -> {
+            // 入科模式：不做时间归一化，直接返回 admissionDateTime
+            return admissionDateTime;
+        }, admissionDateTime);
+    }
+
+    /**
+     * 周期性构建（7天周期，sendTime 由 planFor 计算）
+     *
+     * @param pid               MongoDB patient _id
+     * @param admissionWardTime admission_ward_time（LocalDateTime）
+     * @param sendTime          planFor 计划的发送时间（reportDate 07:00）
+     * @param traceId           追踪ID
+     * @return 身高和体重 payload 列表
+     */
+    public List<VitalSignPayload> buildPeriodic(String pid, LocalDateTime admissionWardTime,
+                                                LocalDateTime sendTime, String traceId) {
+        Document patient = findPatientById(pid, traceId);
+        if (patient == null) {
+            return Collections.emptyList();
         }
 
-        LocalDateTime sendTime = sevenAmOf(planTime);
+        Document formData = findFormData(pid, traceId);
+        if (formData == null) {
+            log.warn("PERIODIC_HW traceId={} pid={} 未找到入院/转入护理评估单，身高体重不回传", traceId, pid);
+            return Collections.emptyList();
+        }
 
-        VitalSignPayload payload = VitalSignPayload.builder()
-                .vitalsignName(metric.name)
-                .vitalsignType(metric.type)
-                .unit(unit)
-                .build();
-        metric.valueSetter.accept(payload, value);
+        NurseRef nurse = heightWeightNurseService.resolve(pid);
 
-        fillCommonFields(payload, patient, sendTime, traceId);
-        payload.setRecordTime(sendTime);
-        payload.setSeries("1");
-        payload.setWardCode("125011");
-        payload.setRemark("");
-        payload.setIsValid(1);
-        applyNurse(payload, nurse, pid, traceId);
+        return buildPair(patient, pid, formData, nurse, traceId, timeNormalizer -> {
+            // 周期模式：用 PayloadTimeNormalizer 归一化到 sendTime
+            return sendTime;
+        }, sendTime);
+    }
 
-        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} {}={} unit={} planTime={}",
-                traceId, pid, metric.name, value, unit, sendTime);
-        return payload;
+    /**
+     * 计划发送时间（委托 ClinicalTimeWindowService）
+     *
+     * @param admissionWardTime admission_ward_time
+     * @param reportDate        报表日期
+     * @param now               当前时间
+     * @return 发送时间（仅在应该发送时返回）
+     */
+    public Optional<LocalDateTime> planFor(LocalDateTime admissionWardTime, LocalDate reportDate, LocalDateTime now) {
+        return timeWindowService.resolveHeightWeightSendTime(admissionWardTime, reportDate, now);
+    }
+
+    /**
+     * 是否应该发送（兼容旧签名，委托 planFor）
+     */
+    public boolean shouldSendHeightWeight(String patientId, LocalDate reportDate, Document patient) {
+        // 取 admission_ward_time
+        LocalDateTime admissionWardTime = resolveAdmissionWardTime(patientId, patient);
+        if (admissionWardTime == null) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now(ZONE);
+        return planFor(admissionWardTime, reportDate, now).isPresent();
+    }
+
+    /**
+     * 获取入科日期（供外部调用，如 DailySummaryTask 需要 admissionWardTime）
+     *
+     * @param patientId 住院号（patient.mrn）
+     * @param patient   MongoDB patient 文档
+     * @return admission_ward_time（LocalDateTime），查不到返回 null
+     */
+    public LocalDateTime getAdmissionWardTime(String patientId, Document patient) {
+        return resolveAdmissionWardTime(patientId, patient);
+    }
+
+    // ======================== 内部方法 ========================
+
+    /**
+     * 共享构建逻辑：查 dFormData 一次，构建身高和体重两条 payload
+     */
+    private List<VitalSignPayload> buildPair(Document patient, String pid, Document formData,
+                                              NurseRef nurse, String traceId,
+                                              java.util.function.Function<Void, LocalDateTime> timeResolver,
+                                              LocalDateTime anchorTime) {
+        List<VitalSignPayload> result = new java.util.ArrayList<>();
+
+        for (Metric metric : Metric.values()) {
+            String value = extractFieldFromFormData(formData, metric.sourceFields);
+            if (value == null) {
+                log.warn("HW_VALUE traceId={} pid={} 评估单无{}字段或值为空 formCode={}",
+                        traceId, pid, metric.sourceFields, formData.getString("formCode"));
+                continue;
+            }
+
+            LocalDateTime sendTime = timeResolver.apply(null);
+
+            VitalSignPayload payload = VitalSignPayload.builder()
+                    .vitalsignName(metric.name)
+                    .vitalsignType(metric.type)
+                    .unit(metric.unit)
+                    .build();
+            metric.valueSetter.accept(payload, value);
+
+            fillCommonFields(payload, patient, sendTime, traceId);
+            payload.setRecordTime(sendTime);
+            payload.setSeries("1");
+            payload.setWardCode("125011");
+            payload.setRemark("");
+            payload.setIsValid(1);
+            applyNurse(payload, nurse, pid, traceId);
+
+            log.info("HW_BUILT traceId={} pid={} {}={} unit={} planTime={}",
+                    traceId, pid, metric.name, value, metric.unit, sendTime);
+            result.add(payload);
+        }
+
+        return result;
     }
 
     /**
@@ -182,52 +254,17 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
         NurseRef effective = (nurse != null) ? nurse : heightWeightNurseService.resolve(pid);
         payload.setRecordNurseId(effective.getId());
         payload.setRecordNurseName(effective.getName());
-        log.info("STEP_07_NURSE traceId={} pid={} 身高体重记录者={} pinned={}",
+        log.info("HW_NURSE traceId={} pid={} 记录者={} pinned={}",
                 traceId, pid, effective.getName(), effective.isPinned());
     }
 
     /**
-     * 检查是否应该发送身高体重（7天分页，入科当天由入科扫描负责）
+     * 入科日期基准解析（R3: 以 admission_ward_time 为唯一基准）
      *
-     * @param patientId  住院号（patient.mrn），用于查 KingBase
-     * @param reportDate 报表日期
-     * @param patient    MongoDB patient文档
+     * 不再有 icuAdmissionTime 同天快捷分支。
+     * 先查 KingBase admission_ward_time；查不到返回 null。
      */
-    public boolean shouldSendHeightWeight(String patientId, LocalDate reportDate, Document patient) {
-        LocalDate admissionDate = resolveAdmissionDate(patientId, patient, reportDate);
-        if (admissionDate == null) {
-            return false;
-        }
-        return timeWindowService.shouldSendHeightWeight(admissionDate, reportDate);
-    }
-
-    /**
-     * 入科日期解析
-     *
-     * 修复点：原实现用 LocalDate.now() 且未指定时区来判断"是否同一天"，
-     *        既忽略了传入的 reportDate（补跑/回溯历史日期时必然算错），
-     *        也用了 JVM 默认时区（本项目其他位置一律禁止）。现改为用 reportDate + Asia/Shanghai。
-     *
-     * @param patientId  住院号（patient.mrn）→ KingBase inpatients.patient_id
-     * @param patient    MongoDB patient文档
-     * @param reportDate 报表日期
-     * @return 入科日期，查不到返回 null（表示不回传）
-     */
-    private LocalDate resolveAdmissionDate(String patientId, Document patient, LocalDate reportDate) {
-        // 1. 先取 patient.icuAdmissionTime
-        java.util.Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", java.util.Date.class);
-        LocalDate icuDate = icuAdmissionTime != null
-                ? icuAdmissionTime.toInstant().atZone(ZONE).toLocalDate()
-                : null;
-
-        // 2. reportDate 与 icuAdmissionTime 同一天 → 直接用
-        if (icuDate != null && icuDate.equals(reportDate)) {
-            log.info("报表日期与入科日期同一天，直接使用icuAdmissionTime patientId={} 入科日期={}",
-                    maskPatientId(patientId), icuDate);
-            return icuDate;
-        }
-
-        // 3. 不同一天 → 查 KingBase admission_ward_time
+    private LocalDateTime resolveAdmissionWardTime(String patientId, Document patient) {
         if (patientId == null || patientId.trim().isEmpty()) {
             log.warn("未获取到admission_ward_time：patient.mrn 为空，跳过身高体重回传");
             return null;
@@ -236,19 +273,26 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
         try {
             InpatientDTO inpatient = inpatientRepository.findByPatientId(patientId);
             if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
-                LocalDate wardDate = inpatient.getAdmissionWardTime().toLocalDate();
-                log.info("从KingBase获取admission_ward_time成功 patientId={} 入科日期={}",
-                        maskPatientId(patientId), wardDate);
-                return wardDate;
+                log.info("从KingBase获取admission_ward_time成功 patientId={} admissionWardTime={}",
+                        maskPatientId(patientId), inpatient.getAdmissionWardTime());
+                return inpatient.getAdmissionWardTime();
             }
         } catch (Exception e) {
             log.warn("查询金仓入科时间失败 patientId={}: {}", maskPatientId(patientId), e.getMessage());
         }
 
-        // 4. 查不到 → 不回传并记录日志
-        log.warn("未获取到admission_ward_time，跳过身高体重回传 patientId={} reportDate={}",
-                maskPatientId(patientId), reportDate);
+        log.warn("未获取到admission_ward_time，跳过身高体重回传 patientId={}", maskPatientId(patientId));
         return null;
+    }
+
+    private Document findPatientById(String pid, String traceId) {
+        try {
+            Query query = new Query(Criteria.where("_id").is(new org.bson.types.ObjectId(pid)));
+            return mongoTemplate.findOne(query, Document.class, "patient");
+        } catch (Exception e) {
+            log.warn("HW_FIND_PATIENT traceId={} pid={} 查询失败: {}", traceId, pid, e.getMessage());
+            return null;
+        }
     }
 
     private String readPid(Document patient) {
@@ -262,13 +306,6 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
                 .with(Sort.by(Sort.Direction.DESC, "createTime"))
                 .limit(1);
         return mongoTemplate.findOne(query, Document.class, "dFormData");
-    }
-
-    /**
-     * 取 planTime 当天 07:00 作为身高体重的发送时间
-     */
-    private LocalDateTime sevenAmOf(LocalDateTime planTime) {
-        return LocalDateTime.of(planTime.toLocalDate(), LocalTime.of(7, 0));
     }
 
     @SuppressWarnings("unchecked")

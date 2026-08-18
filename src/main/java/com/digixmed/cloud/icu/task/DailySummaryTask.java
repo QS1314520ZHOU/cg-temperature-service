@@ -135,6 +135,9 @@ public class DailySummaryTask {
     @Autowired
     private DrugAmountCalculator drugAmountCalculator;
 
+    @Autowired
+    private PushTask pushTask;
+
     /**
      * 执行每日汇总
      */
@@ -186,6 +189,13 @@ public class DailySummaryTask {
             }
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总完成", traceId);
+
+            // 汇总完成后立即推送
+            try {
+                pushTask.pushOnce(traceId);
+            } catch (Exception pe) {
+                log.error("SUMMARY_PUSH traceId={} 汇总后立即推送异常", traceId, pe);
+            }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 每日汇总异常", traceId, e);
         }
@@ -232,6 +242,13 @@ public class DailySummaryTask {
             }
 
             log.info("CHECK_RESEND traceId={} 变化检测完成", traceId);
+
+            // 变化检测后立即推送（如有变化的记录）
+            try {
+                pushTask.pushOnce(traceId);
+            } catch (Exception pe) {
+                log.error("CHECK_RESEND_PUSH traceId={} 变化检测后推送异常", traceId, pe);
+            }
         } catch (Exception e) {
             log.error("CHECK_RESEND traceId={} 变化检测异常", traceId, e);
         }

@@ -56,7 +56,7 @@ public class PushTask {
     @Autowired
     private IntermediateService intermediateService;
 
-    @Scheduled(cron = "${vitalsign.push.cron:0 0/2 * * * ?}")
+    @Scheduled(cron = "${vitalsign.push.cron:0 */10 * * * ?}")
     public void execute() {
         if (!autoEnabled) {
             log.warn("PUSH_SKIPPED autoEnabled=false, 自动推送已关闭, 跳过本轮");

@@ -28,7 +28,8 @@ kingbase:
 vitalsign:
   push:
     url: ${VITALSIGN_PUSH_URL:http://10.35.4.101:8813/NIS_SE/mcs-ws/EwellInterfaceService}
-    cron: ${VITALSIGN_PUSH_CRON:0 0/2 * * * ?}
+    # 推送兜底：扫描/汇总后已立即推送，此为安全网（处理异常未推送的记录）
+    cron: ${VITALSIGN_PUSH_CRON:0 */10 * * * ?}
     connection-timeout: 10000
     read-timeout: 30000
     enabled: true
@@ -80,7 +81,8 @@ digixmed:
   isUpload: true
   testPid: all
   rcron: 0 0/2 * * * ?
-  cron: 0 0/5 * * * ?
+  # 生命体征扫描频率：每小时一次
+  cron: 0 0 * * * ?
   deleteDay: 180
   backDay: 1
   timePointasd: 7

@@ -122,6 +122,8 @@ public class VitalSignScanTask {
     private PainScoreHandler painScoreHandler;
     @Autowired
     private HeightWeightHandler heightWeightHandler;
+    @Autowired
+    private PushTask pushTask;
 
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
@@ -178,6 +180,13 @@ public class VitalSignScanTask {
             processBloodPressureSlots(now, traceId);
 
             log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描完成", traceId);
+
+            // 扫描完成后立即推送（不等 PushTask 定时）
+            try {
+                pushTask.pushOnce(traceId);
+            } catch (Exception pe) {
+                log.error("SCAN_PUSH traceId={} 扫描后立即推送异常", traceId, pe);
+            }
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} 普通体征扫描异常", traceId, e);
         }

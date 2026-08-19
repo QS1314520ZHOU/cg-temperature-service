@@ -224,24 +224,32 @@ public class DailySummaryTask {
         try {
             LocalDate today = timeWindowService.today();
             LocalDate yesterday = today.minusDays(1);
-            ClinicalTimeWindow window = timeWindowService.buildDailyWindow(yesterday);
 
-            List<String> pids = findCandidatePids(window, traceId);
-            log.info("CHECK_RESEND traceId={} 日期={} 候选患者数量={}", traceId, yesterday, pids.size());
+            // 每小时检测两天的数据：昨天 + 今天
+            // 昨天：[yesterday 07:00, today 07:00) — 已有完整数据
+            // 今天：[today 07:00, tomorrow 07:00) — 捕获07:00后新写入的记录
+            List<LocalDate> checkDates = Arrays.asList(yesterday, today);
 
-            if (pids.isEmpty()) {
-                return;
+            for (LocalDate checkDate : checkDates) {
+                ClinicalTimeWindow window = timeWindowService.buildDailyWindow(checkDate);
+
+                List<String> pids = findCandidatePids(window, traceId);
+                log.info("CHECK_RESEND traceId={} 日期={} 候选患者数量={}", traceId, checkDate, pids.size());
+
+                if (pids.isEmpty()) {
+                    continue;
+                }
+
+                Map<String, Document> patientMap = findMongoPatientsByPids(pids);
+
+                for (String pid : pids) {
+                    Document patient = patientMap.get(pid);
+                    if (patient == null) continue;
+                    processPatientSummary(pid, patient, window, checkDate, traceId);
+                }
+
+                log.info("CHECK_RESEND traceId={} 日期={} 变化检测完成", traceId, checkDate);
             }
-
-            Map<String, Document> patientMap = findMongoPatientsByPids(pids);
-
-            for (String pid : pids) {
-                Document patient = patientMap.get(pid);
-                if (patient == null) continue;
-                processPatientSummary(pid, patient, window, yesterday, traceId);
-            }
-
-            log.info("CHECK_RESEND traceId={} 变化检测完成", traceId);
 
             // 变化检测后立即推送（如有变化的记录）
             try {

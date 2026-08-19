@@ -434,14 +434,28 @@ public class DailySummaryTask {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
+    /** 检查是否有任何匹配指定code的记录 */
+    private boolean hasAnyRecord(List<Document> records, List<String> codes) {
+        return records.stream().anyMatch(doc -> {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            return code != null && codes.contains(code);
+        });
+    }
+    }
+
     /**
      * 处理小便量
      */
     private void processUrineOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId) {
-        // 求和所有param_niaoLiang记录
-        BigDecimal total = records.stream()
+        // 只处理有 param_niaoLiang 记录的患者（用户填写了才回传）
+        List<Document> matched = records.stream()
                 .filter(doc -> "param_niaoLiang".equals(getValueFromDocByKey(doc, "code", String.class)))
+                .collect(Collectors.toList());
+        if (matched.isEmpty()) {
+            return;
+        }
+        BigDecimal total = matched.stream()
                 .map(doc -> {
                     String val = getValueFromDocByKey(doc, "strVal", String.class);
                     try {
@@ -453,10 +467,8 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_niaoLiang", window);
-            enqueue(urineOutputHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_niaoLiang", window);
+        enqueue(urineOutputHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -475,17 +487,16 @@ public class DailySummaryTask {
         List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
         List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
 
-        BigDecimal oralTotal = sumByCodes(records, oralCodes);
-        BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
-
-        // 饮入量 1044
-        if (oralTotal.compareTo(BigDecimal.ZERO) >= 0) {
+        // 饮入量 1044（有记录才回传）
+        if (hasAnyRecord(records, oralCodes)) {
+            BigDecimal oralTotal = sumByCodes(records, oralCodes);
             Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_biSi", window);
             enqueue(oralIntakeHandler, vDoc, patient, window, traceId);
         }
 
-        // 输入量 1045
-        if (therapyTotal.compareTo(BigDecimal.ZERO) >= 0) {
+        // 输入量 1045（有记录才回传）
+        if (hasAnyRecord(records, therapyCodes)) {
+            BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
             Document vDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
             enqueue(therapyInputHandler, vDoc, patient, window, traceId);
         }
@@ -494,7 +505,16 @@ public class DailySummaryTask {
         Date startDate = Date.from(window.getStart().atZone(ZONE).toInstant());
         Date endDate = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
+        // 检查是否有任何入量相关记录（bedside 或 drugExecution）
+        List<String> allInputCodes = new java.util.ArrayList<>();
+        allInputCodes.addAll(OralIntakeHandler.getOralIntakeCodes());
+        allInputCodes.addAll(TherapyInputHandler.getTherapyInputCodes());
+        boolean hasInputRecords = hasAnyRecord(records, allInputCodes);
         List<Document> drugExecutions = drugAmountCalculator.queryDrugExe(pid, startDate, endDate);
+        if (!hasInputRecords && drugExecutions.isEmpty()) {
+            return;
+        }
+
         List<Document> drugMethods = drugAmountCalculator.queryDrugMethods();
         DrugAmountCalculator.DrugChannelTotals drugChannelTotals =
                 drugAmountCalculator.sumDrugAmountsByChannel(
@@ -504,10 +524,8 @@ public class DailySummaryTask {
         BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
                 records, drugChannelTotals, traceId, pid);
 
-        if (totalInput.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
-            enqueue(totalInputHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
+        enqueue(totalInputHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -518,12 +536,23 @@ public class DailySummaryTask {
      */
     private void processTotalOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId) {
-        BigDecimal total = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
-
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
-            enqueue(totalOutputHandler, vDoc, patient, window, traceId);
+        // 总出量组成：尿量、净超滤量、排出物、引流液
+        List<String> allOutputCodes = new java.util.ArrayList<>();
+        allOutputCodes.add("param_niaoLiang");
+        allOutputCodes.add("param_chaoLvLiang");
+        allOutputCodes.addAll(DrainageOutputHandler.getDrainageCodes());
+        // 加上 _tube_ 通配
+        boolean hasOutputRecords = records.stream().anyMatch(doc -> {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            return code != null && (allOutputCodes.contains(code) || code.contains("_tube_"));
+        });
+        if (!hasOutputRecords) {
+            return;
         }
+
+        BigDecimal total = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
+        enqueue(totalOutputHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -532,6 +561,9 @@ public class DailySummaryTask {
     private void processDrainageOutput(List<Document> records, Document patient, String pid,
                                         ClinicalTimeWindow window, String traceId) {
         List<String> drainageCodes = DrainageOutputHandler.getDrainageCodes();
+        if (!hasAnyRecord(records, drainageCodes)) {
+            return;
+        }
         BigDecimal total = records.stream()
                 .filter(doc -> {
                     String code = getValueFromDocByKey(doc, "code", String.class);
@@ -547,10 +579,8 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
-            enqueue(drainageOutputHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
+        enqueue(drainageOutputHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -558,6 +588,11 @@ public class DailySummaryTask {
      */
     private void processGastricDrainage(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId) {
+        boolean hasRecords = records.stream()
+                .anyMatch(doc -> "param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class)));
+        if (!hasRecords) {
+            return;
+        }
         BigDecimal total = records.stream()
                 .filter(doc -> "param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class)))
                 .map(doc -> {
@@ -570,10 +605,8 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
-            enqueue(gastricDrainageHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
+        enqueue(gastricDrainageHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -581,6 +614,13 @@ public class DailySummaryTask {
      */
     private void processOtherDrainage(List<Document> records, Document patient, String pid,
                                        ClinicalTimeWindow window, String traceId) {
+        boolean hasRecords = records.stream().anyMatch(doc -> {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            return code != null && code.contains("_tube_") && !"param_tube_胃肠减压".equals(code);
+        });
+        if (!hasRecords) {
+            return;
+        }
         BigDecimal total = records.stream()
                 .filter(doc -> {
                     String code = getValueFromDocByKey(doc, "code", String.class);
@@ -596,10 +636,8 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
-            enqueue(otherDrainageHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
+        enqueue(otherDrainageHandler, vDoc, patient, window, traceId);
     }
 
     /**
@@ -607,6 +645,11 @@ public class DailySummaryTask {
      */
     private void processNetUltrafiltration(List<Document> records, Document patient, String pid,
                                             ClinicalTimeWindow window, String traceId) {
+        boolean hasRecords = records.stream()
+                .anyMatch(doc -> "param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class)));
+        if (!hasRecords) {
+            return;
+        }
         BigDecimal total = records.stream()
                 .filter(doc -> "param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class)))
                 .map(doc -> {
@@ -619,10 +662,8 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) >= 0) {
-            Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
-            enqueue(netUltrafiltrationHandler, vDoc, patient, window, traceId);
-        }
+        Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
+        enqueue(netUltrafiltrationHandler, vDoc, patient, window, traceId);
     }
 
     /**

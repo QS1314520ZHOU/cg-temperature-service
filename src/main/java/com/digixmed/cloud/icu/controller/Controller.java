@@ -473,7 +473,7 @@ public class Controller {
         // 小便量
         try {
             BigDecimal urineTotal = sumByCode(records, "param_niaoLiang");
-            if (urineTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (urineTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", urineTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_niaoLiang");
                 VitalSignPayload payload = urineOutputHandler.handle(doc, patient, planTimeDate, traceId);
@@ -493,7 +493,7 @@ public class Controller {
         try {
             List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
             BigDecimal oralTotal = sumByCodes(records, oralCodes);
-            if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (oralTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", oralTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_kouFu");
                 VitalSignPayload payload = oralIntakeHandler.handle(doc, patient, planTimeDate, traceId);
@@ -513,7 +513,7 @@ public class Controller {
         try {
             List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
             BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
-            if (therapyTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (therapyTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", therapyTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_YaoYeti_in_hour");
                 VitalSignPayload payload = therapyInputHandler.handle(doc, patient, planTimeDate, traceId);
@@ -540,7 +540,7 @@ public class Controller {
 
             BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
                     records, drugChannelTotals, traceId, pid);
-            if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
+            if (totalInput.compareTo(BigDecimal.ZERO) >= 0) {
                 VitalSignPayload payload = totalInputHandler.buildPayload(
                         totalInput.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
@@ -558,7 +558,7 @@ public class Controller {
         // 总出量（对齐护理记录单：尿量 + 净超滤量 + 排出物 + 引流液）
         try {
             BigDecimal outputTotal = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
-            if (outputTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (outputTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 VitalSignPayload payload = totalOutputHandler.buildPayload(
                         outputTotal.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
@@ -577,7 +577,7 @@ public class Controller {
         try {
             List<String> drainageCodes = DrainageOutputHandler.getDrainageCodes();
             BigDecimal drainageTotal = sumByCodes(records, drainageCodes);
-            if (drainageTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (drainageTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", drainageTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_daBianAmount");
                 VitalSignPayload payload = drainageOutputHandler.handle(doc, patient, planTimeDate, traceId);
@@ -596,7 +596,7 @@ public class Controller {
         // 胃管负压引流
         try {
             BigDecimal gastricTotal = sumByCode(records, "param_tube_胃肠减压");
-            if (gastricTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (gastricTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", gastricTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_tube_胃肠减压");
                 VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient, planTimeDate, traceId);
@@ -621,7 +621,7 @@ public class Controller {
                     })
                     .map(doc -> parseBigDecimal(doc.getString("strVal")))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (otherTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (otherTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", otherTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_tube_other");
                 VitalSignPayload payload = otherDrainageHandler.handle(doc, patient, planTimeDate, traceId);
@@ -640,7 +640,7 @@ public class Controller {
         // 净超滤量
         try {
             BigDecimal ultraTotal = sumByCode(records, "param_chaoLvLiang");
-            if (ultraTotal.compareTo(BigDecimal.ZERO) > 0) {
+            if (ultraTotal.compareTo(BigDecimal.ZERO) >= 0) {
                 Document doc = new Document("strVal", ultraTotal.stripTrailingZeros().toPlainString())
                         .append("code", "param_chaoLvLiang");
                 VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient, planTimeDate, traceId);

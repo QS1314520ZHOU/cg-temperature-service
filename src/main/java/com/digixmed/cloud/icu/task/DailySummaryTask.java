@@ -453,7 +453,7 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_niaoLiang", window);
             enqueue(urineOutputHandler, vDoc, patient, window, traceId);
         }
@@ -479,13 +479,13 @@ public class DailySummaryTask {
         BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
 
         // 饮入量 1044
-        if (oralTotal.compareTo(BigDecimal.ZERO) > 0) {
+        if (oralTotal.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_biSi", window);
             enqueue(oralIntakeHandler, vDoc, patient, window, traceId);
         }
 
         // 输入量 1045
-        if (therapyTotal.compareTo(BigDecimal.ZERO) > 0) {
+        if (therapyTotal.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
             enqueue(therapyInputHandler, vDoc, patient, window, traceId);
         }
@@ -504,7 +504,7 @@ public class DailySummaryTask {
         BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
                 records, drugChannelTotals, traceId, pid);
 
-        if (totalInput.compareTo(BigDecimal.ZERO) > 0) {
+        if (totalInput.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
             enqueue(totalInputHandler, vDoc, patient, window, traceId);
         }
@@ -520,7 +520,7 @@ public class DailySummaryTask {
                                      ClinicalTimeWindow window, String traceId) {
         BigDecimal total = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
             enqueue(totalOutputHandler, vDoc, patient, window, traceId);
         }
@@ -547,7 +547,7 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
             enqueue(drainageOutputHandler, vDoc, patient, window, traceId);
         }
@@ -570,7 +570,7 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
             enqueue(gastricDrainageHandler, vDoc, patient, window, traceId);
         }
@@ -596,7 +596,7 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
             enqueue(otherDrainageHandler, vDoc, patient, window, traceId);
         }
@@ -619,7 +619,7 @@ public class DailySummaryTask {
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        if (total.compareTo(BigDecimal.ZERO) > 0) {
+        if (total.compareTo(BigDecimal.ZERO) >= 0) {
             Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
             enqueue(netUltrafiltrationHandler, vDoc, patient, window, traceId);
         }

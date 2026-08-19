@@ -52,7 +52,71 @@ FAILED → 推送中 → SUCCESS
 - 内容哈希：SHA-256（不含traceId/className等易变字段）
 - 相同内容+SUCCESS → 跳过；内容变化 → 设FAILED + 保存旧值快照
 
-### 业务约束
+### 推送逻辑（完整链路）
+
+### 推送触发方式
+| 触发源 | 时机 | 说明 |
+|--------|------|------|
+| `VitalSignScanTask` | 每小时:10扫描完成后 | 扫描写入队列后立即调用 `pushTask.pushOnce(traceId)` |
+| `DailySummaryTask` | 每天08:00汇总完成后 | 汇总写入队列后立即调用 `pushTask.pushOnce(traceId)` |
+| `DailySummaryTask.checkAndResend` | 每小时:10变化检测完成后 | 检测到变化重新入队后调用 `pushTask.pushOnce(traceId)` |
+| `PushTask` 定时兜底 | `0 */10 * * * ?`（每10分钟） | 兜底扫描，确保漏网的 FAILED 记录被处理 |
+
+### 推送执行流程（PushTask.pushOnce）
+```
+1. fetchPending(10) — 从 vitalsign_push_queue 取最多10条 FAILED 记录（按 createdAt 升序）
+2. 逐条执行 pushOne():
+   a. 比对 payloadHash vs lastSuccessHash
+   b. 如果 lastSuccessHash 存在且与 payloadHash 不一致（内容变化）：
+      → 先用 lastSuccessPayload 构建 isValid=0 作废报文
+      → 调用 PushService.pushInvalidation() 发送作废
+      → 作废失败 → 整条中止，标记 INVALIDATION_FAILED，下一轮重试
+      → 作废成功 → 继续推新值
+   c. 用当前记录构建 isValid=1 新值报文
+   d. 调用 PushService.push() 发送
+   e. 推送成功 → markSuccess()：设 status=SUCCESS + 写入 lastSuccessHash + lastSuccessPayload
+   f. 推送失败 → markFailed()：设 status=FAILED + 记录错误码/信息 + retryCount+1
+```
+
+### 队列记录状态机（IntermediateService）
+```
+新记录入队 → status=FAILED
+   ↓ fetchPending 取出
+推送成功 → markSuccess() → status=SUCCESS + lastSuccessHash + lastSuccessPayload
+推送失败 → markFailed() → status=FAILED（下一轮重试）
+内容变化 → upsertPending() → 更新业务字段 + status=FAILED + retryCount=0
+```
+
+### 入队逻辑（IntermediateService.upsertPending）
+幂等键：`{patientId}_{series}_{vitalsignType}_{planTime}`
+
+| 情况 | 处理 |
+|------|------|
+| 无记录 | 插入，status=FAILED |
+| 有记录，payloadHash 相同，status=SUCCESS | 跳过（不重复推送） |
+| 有记录，payloadHash 不同 | 更新业务字段，status=FAILED，retryCount=0 |
+| 有记录，status=FAILED | 更新业务字段，status=FAILED |
+
+**重要约束**：扫描任务写队列时只覆盖业务字段和 updatedAt，禁止清空 lastErrorCode / requestMsg / responseMsg / sentAt / retryCount（保留调试信息）
+
+### 内容哈希（SHA-256）
+参与 hash 的字段：patientId, mrn, patientName, series, wardCode, vitalsignType, vitalsignName, unit, vitalsignNVal1~3, vitalsignSVal1~2, remark, isValid, recordNurseId, recordNurseName, mongoPid, planTime, isCustomType
+
+不含 traceId、className、createdAt 等易变字段。
+
+### 身份校验（PushService.ensurePatientIdentity）
+推送前按 `mongoPid` 回查 patient 文档：
+1. patient 不存在 → 跳过不推送
+2. patientId（patient.mrn）为空 → 跳过不推送
+3. mrn（patient.hisPid）为空 → 警告但仍推送
+4. patientId/mrn/patientName 从 patient 文档实时读取，不依赖队列中缓存的值
+
+### 默认记录者
+- recordNurseId: `041660`
+- recordNurseName: `陈琳`
+- patientId/mrn/patientName 从 patient 文档读取，非队列缓存
+
+## 业务约束
 1. 扫描任务写队列时只覆盖业务字段和 updatedAt，禁止清空 lastErrorCode / requestMsg / responseMsg / sentAt / retryCount
 2. 时区统一 Asia/Shanghai
 3. JAXB 遇 null 会省略节点，空值一律输出空串
@@ -158,6 +222,14 @@ FAILED → 推送中 → SUCCESS
 # application.yml
 spring.data.mongodb.uri: mongodb://root:密码@IP:27017/dt?authSource=admin
 vitalsign.patient.ward-code: 125011
+vitalsign.patient.record-nurse-id: 041660
+
+# 定时任务
+digixmed.cron: 0 10 * * * ?                    # 生命体征扫描：每小时:10
+vitalsign.push.cron: 0 */10 * * * ?            # 推送兜底：每10分钟
+vitalsign.summary.cron: 0 0 8 * * ?            # 每日汇总：每天08:00
+vitalsign.summary.check-cron: 0 10 * * * ?     # 变化检测：每小时:10
+vitalsign.summary.lookback-days: 1             # 汇总回看天数
 
 # KingBase数据源
 spring.datasource.kingbase.url: jdbc:kingbase8://IP:54321/数据库名

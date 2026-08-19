@@ -57,9 +57,9 @@ public class PatientIdentityMapper {
 
     /**
      * 默认recordNurseId值
-     * 新需求固定为"dba"
+     * 默认"041660"（陈琳）
      */
-    @Value("${vitalsign.patient.record-nurse-id:dba}")
+    @Value("${vitalsign.patient.record-nurse-id:041660}")
     private String defaultRecordNurseId;
 
     /**

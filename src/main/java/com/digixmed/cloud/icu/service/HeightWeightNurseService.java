@@ -37,8 +37,8 @@ public class HeightWeightNurseService {
     public static final String COLLECTION = "vitalsign_hw_nurse";
 
     /** 兜底记录者：与 PushService.buildDataXml 的默认值保持一致 */
-    public static final String DEFAULT_NURSE_ID = "dba";
-    public static final String DEFAULT_NURSE_NAME = "系统管理员";
+    public static final String DEFAULT_NURSE_ID = "041660";
+    public static final String DEFAULT_NURSE_NAME = "陈琳";
 
     @Autowired
     private MongoTemplate mongoTemplate;

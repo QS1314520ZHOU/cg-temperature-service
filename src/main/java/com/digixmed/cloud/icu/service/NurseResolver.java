@@ -57,7 +57,7 @@ public class NurseResolver {
             String trueName = lookupTrueName(editUserFromParamYishi);
             if (trueName != null) {
                 return NurseInfo.builder()
-                        .nurseId("dba")
+                        .nurseId("041660")
                         .nurseName(trueName)
                         .source("param_Yishi")
                         .reasonCode(null)
@@ -71,7 +71,7 @@ public class NurseResolver {
             String trueName = lookupTrueName(editUserFromRecord);
             if (trueName != null) {
                 return NurseInfo.builder()
-                        .nurseId("dba")
+                        .nurseId("041660")
                         .nurseName(trueName)
                         .source("source_record")
                         .reasonCode(null)
@@ -81,7 +81,7 @@ public class NurseResolver {
 
         // Step 3: not found
         return NurseInfo.builder()
-                .nurseId("dba")
+                .nurseId("041660")
                 .nurseName("")
                 .source("not_found")
                 .reasonCode("NURSE_NOT_FOUND")

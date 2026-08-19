@@ -231,12 +231,12 @@ public class PushService {
         if (payload.getRecordTime() != null) {
             dataValue.setRecordTime(Date.from(payload.getRecordTime().atZone(ZoneId.of("Asia/Shanghai")).toInstant()));
         }
-        // recordNurseId 为空时默认 "dba"
+        // recordNurseId 为空时默认 "041660"
         String nurseId = payload.getRecordNurseId();
-        dataValue.setRecordNurseId((nurseId != null && !nurseId.isEmpty()) ? nurseId : "dba");
-        // recordNurseName 为空时默认 "系统管理员"
+        dataValue.setRecordNurseId((nurseId != null && !nurseId.isEmpty()) ? nurseId : "041660");
+        // recordNurseName 为空时默认 "陈琳"
         String nurseName = payload.getRecordNurseName();
-        dataValue.setRecordNurseName((nurseName != null && !nurseName.isEmpty()) ? nurseName : "系统管理员");
+        dataValue.setRecordNurseName((nurseName != null && !nurseName.isEmpty()) ? nurseName : "陈琳");
         dataValue.setSeries(payload.getSeries());
         dataValue.setUnit(payload.getUnit());
         dataValue.setWardCode(payload.getWardCode());

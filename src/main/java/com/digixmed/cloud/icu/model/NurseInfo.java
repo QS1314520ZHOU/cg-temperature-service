@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 @Builder
 public class NurseInfo {
-    /** nurse ID, always "dba" per project convention */
+    /** nurse ID, default "041660" (陈琳) */
     private String nurseId;
     /** resolved trueName from account, or empty if not found */
     private String nurseName;

@@ -28,7 +28,7 @@ import java.util.Date;
  *   - remark = ""
  *   - isValid = 1
  *   - wardCode = "125011"
- *   - recordNurseId = "dba"
+ *   - recordNurseId = "041660"
  *   - planTime = bedside.time
  *   - recordTime = bedside.time
  */
@@ -76,12 +76,12 @@ public abstract class BaseVitalSignHandler {
         if (account != null) {
             String username = getValueFromDocByKey(account, "username", String.class);
             String trueName = getValueFromDocByKey(account, "trueName", String.class);
-            payload.setRecordNurseId(username != null ? username : "dba");
-            payload.setRecordNurseName(trueName != null ? trueName : "系统管理员");
+            payload.setRecordNurseId(username != null ? username : "041660");
+            payload.setRecordNurseName(trueName != null ? trueName : "陈琳");
             log.info("STEP_07_NURSE traceId={} account resolved username={} trueName={}", traceId, username, trueName);
         } else {
-            payload.setRecordNurseId("dba");
-            payload.setRecordNurseName("系统管理员");
+            payload.setRecordNurseId("041660");
+            payload.setRecordNurseName("陈琳");
             log.warn("STEP_07_NURSE traceId={} 未找到account记录，使用默认值", traceId);
         }
 

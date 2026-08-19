@@ -20,7 +20,7 @@ import java.time.LocalDateTime;
  * - remark = ""
  * - isValid = 1
  * - wardCode = "125011"
- * - recordNurseId = "dba"
+ * - recordNurseId = "041660"
  */
 @Data
 @Builder
@@ -123,17 +123,17 @@ public class VitalSignPayload {
 
     /**
      * 记录护士ID
-     * 新需求固定为"dba"
+     * 默认"041660"（陈琳）
      */
     @Builder.Default
-    private String recordNurseId = "dba";
+    private String recordNurseId = "041660";
 
     /**
      * 记录护士姓名
      * 优先从param_Yishi解析
      */
     @Builder.Default
-    private String recordNurseName = "系统管理员";
+    private String recordNurseName = "陈琳";
 
     /**
      * 单位

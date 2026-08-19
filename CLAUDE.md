@@ -180,9 +180,7 @@ FAILED → 推送中 → SUCCESS
 
 ### 每小时变化检测（checkAndResendScheduled）
 - **频率**：每小时:10执行（`0 10 * * * ?`）
-- **检测范围**：**两天**的数据（昨天 + 今天）
-  - 昨天窗口：`[yesterday 07:00, today 07:00)` — 已有完整数据
-  - 今天窗口：`[today 07:00, tomorrow 07:00)` — 捕获07:00后新写入的记录
+- **检测范围**：昨天一天 `[yesterday 07:00, today 07:00)`
 - **原理**：复用 processPatientSummary，upsertPending 内部比对 payloadHash：
   - hash 相同 + SUCCESS → SKIP（不重复推送）
   - hash 不同 → 设 FAILED → PushTask 自动走两步流程（isValid=0 旧值 → isValid=1 新值）

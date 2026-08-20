@@ -109,6 +109,10 @@ public class TemperatureHandler extends BaseVitalSignHandler {
      */
     private String findTemperatureLocation(String pid, LocalDateTime planTime, String traceId) {
         ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(planTime.toLocalDate(), planTime.getHour());
+        if (window == null) {
+            log.warn("TEMP_LOCATION traceId={} pid={} 无法构建时间窗口 planTime={}", traceId, pid, planTime);
+            return null;
+        }
         Date startTime = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
         Date endTime = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 

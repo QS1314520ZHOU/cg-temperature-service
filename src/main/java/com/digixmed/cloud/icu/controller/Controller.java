@@ -443,9 +443,9 @@ public class Controller {
         Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
         LocalDateTime planTimeDate = window.getEnd();
 
-        // 查询窗口内所有bedside记录（左开右闭：time > start AND time <= end）
+        // 查询窗口内所有bedside记录（左闭右开：time >= start AND time < end）
         Query query = new Query(Criteria.where("pid").is(pid)
-                .and("time").gt(startDate).lte(endDate));
+                .and("time").gte(startDate).lt(endDate));
         List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
 
         // 大便次数（只查07:00）

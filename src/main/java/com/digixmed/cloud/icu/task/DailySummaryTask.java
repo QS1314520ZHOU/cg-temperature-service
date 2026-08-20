@@ -317,10 +317,10 @@ public class DailySummaryTask {
                 }
             }
 
-            // 查询窗口内所有bedside记录（左开右闭：time > start AND time <= end）
+            // 查询窗口内所有bedside记录（左闭右开：time >= start AND time < end）
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("valid").ne(false)
-                    .and("time").gt(startDate).lte(endDate));
+                    .and("time").gte(startDate).lt(endDate));
             List<Document> records = mongoTemplate.find(query, Document.class, "bedside");
 
             log.info("STEP_03_SOURCE_RECORDS_QUERIED traceId={} pid={} recordCount={}",

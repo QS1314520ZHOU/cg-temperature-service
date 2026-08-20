@@ -314,7 +314,8 @@ public class DailySummaryTask {
                 if (reportDate.equals(admissionDate)) {
                     // 入科第一天：计算从入科时间到 window.getEnd()（即 reportDate+1 07:00）的小时数
                     long minutes = java.time.Duration.between(admissionTime, window.getEnd()).toMinutes();
-                    admissionHoursToSeven = (int) (minutes / 60);
+                    // 1小时29分算1小时、1小时30分算2小时（满30分钟进1小时）
+                    admissionHoursToSeven = (int) ((minutes + 30) / 60);
                     log.info("ADMISSION_HOURS traceId={} pid={} admissionTime={} hoursToSeven={}",
                             patientTraceId, pid, admissionTime, admissionHoursToSeven);
                 }

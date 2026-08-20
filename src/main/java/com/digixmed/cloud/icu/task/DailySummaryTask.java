@@ -300,23 +300,19 @@ public class DailySummaryTask {
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-            // 入科第一天：计算入科时间到第二天07:00的小时数
+            // 入科第一天：计算入科时间到第二天07:00的小时数（取 patient.icuAdmissionTime）
             int admissionHoursToSeven = 0;
-            com.digixmed.cloud.icu.model.InpatientDTO inpatient = null;
-            try {
-                inpatient = inpatientRepository.findByPatientId(hisPatientId);
-            } catch (Exception e) {
-                log.warn("STEP_12_HW traceId={} patientId={} 查入科时间失败: {}", patientTraceId, maskPatientId(hisPatientId), e.getMessage());
-            }
-            if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
-                LocalDateTime admissionTime = inpatient.getAdmissionWardTime();
+            Date icuAdmissionDate = patient.get("icuAdmissionTime") instanceof Date
+                    ? (Date) patient.get("icuAdmissionTime") : null;
+            if (icuAdmissionDate != null) {
+                LocalDateTime admissionTime = icuAdmissionDate.toInstant()
+                        .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
                 LocalDate admissionDate = admissionTime.toLocalDate();
                 if (reportDate.equals(admissionDate)) {
-                    // 入科第一天：计算从入科时间到 window.getEnd()（即 reportDate+1 07:00）的小时数
                     long minutes = java.time.Duration.between(admissionTime, window.getEnd()).toMinutes();
                     // 1小时29分算1小时、1小时30分算2小时（满30分钟进1小时）
                     admissionHoursToSeven = (int) ((minutes + 30) / 60);
-                    log.info("ADMISSION_HOURS traceId={} pid={} admissionTime={} hoursToSeven={}",
+                    log.info("ADMISSION_HOURS traceId={} pid={} icuAdmissionTime={} hoursToSeven={}",
                             patientTraceId, pid, admissionTime, admissionHoursToSeven);
                 }
             }
@@ -354,7 +350,13 @@ public class DailySummaryTask {
             // 净超滤量
             processNetUltrafiltration(records, patient, pid, window, patientTraceId, admissionHoursToSeven);
 
-            // 身高体重（R3: 以 admission_ward_time 为基准，7天周期）
+            // 身高体重（R3: 以 KingBase admission_ward_time 为基准，7天周期）
+            com.digixmed.cloud.icu.model.InpatientDTO inpatient = null;
+            try {
+                inpatient = inpatientRepository.findByPatientId(hisPatientId);
+            } catch (Exception e) {
+                log.warn("STEP_12_HW traceId={} patientId={} 查入科时间失败: {}", patientTraceId, maskPatientId(hisPatientId), e.getMessage());
+            }
             if (inpatient != null && inpatient.getAdmissionWardTime() != null) {
                 LocalDateTime admissionWardTime = inpatient.getAdmissionWardTime();
                 java.util.Optional<LocalDateTime> sendTimeOpt = heightWeightHandler.planFor(

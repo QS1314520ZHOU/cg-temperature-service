@@ -74,6 +74,7 @@ public class VitalSignScanTask {
     private static final String CODE_BREATH = "param_resp";
     private static final String CODE_PAIN = "param_tengTong_score";
     private static final String CODE_SYSTOLIC = "param_nibp_s";
+    private static final String CODE_DIASTOLIC = "param_nibp_d";
 
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
@@ -357,6 +358,9 @@ public class VitalSignScanTask {
                 patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
                 CODE_PAIN, painScoreHandler, window);
 
+        // 1.1 入科血压：查入科时间点的收缩压+舒张压，成对才回传
+        processAdmissionBloodPressure(patientTraceId, pid, patient, admissionDateTime, window);
+
         // 2. 身高体重（与体温解耦：体温缺失不阻断身高体重）
         if (tempPayload == null) {
             log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，身高体重将使用默认记录者", patientTraceId, pid);
@@ -548,6 +552,70 @@ public class VitalSignScanTask {
         } catch (Exception e) {
             log.error("ADMISSION_VITALS traceId={} pid={} code={} 处理异常", patientTraceId, pid, sourceCode, e);
             return null;
+        }
+    }
+
+    /**
+     * 入科血压：查入科时间点的收缩压+舒张压，成对才回传
+     * planTime = recordTime = admissionDateTime
+     */
+    private void processAdmissionBloodPressure(String patientTraceId, String pid, Document patient,
+                                                LocalDateTime admissionDateTime, ClinicalTimeWindow window) {
+        try {
+            Date startTime = Date.from(admissionDateTime.atZone(ZONE).toInstant());
+            Date endTime = Date.from(window.getEnd().atZone(ZONE).toInstant());
+
+            // 查收缩压
+            Query sysQuery = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(CODE_SYSTOLIC)
+                    .and("valid").ne(false)
+                    .and("time").gte(startTime).lt(endTime))
+                    .with(Sort.by(Sort.Direction.ASC, "time")
+                            .and(Sort.by(Sort.Direction.DESC, "editTime")))
+                    .limit(1);
+            Document sysDoc = mongoTemplate.findOne(sysQuery, Document.class, BEDSIDE);
+
+            // 查舒张压
+            Query diaQuery = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(CODE_DIASTOLIC)
+                    .and("valid").ne(false)
+                    .and("time").gte(startTime).lt(endTime))
+                    .with(Sort.by(Sort.Direction.ASC, "time")
+                            .and(Sort.by(Sort.Direction.DESC, "editTime")))
+                    .limit(1);
+            Document diaDoc = mongoTemplate.findOne(diaQuery, Document.class, BEDSIDE);
+
+            if (sysDoc == null || diaDoc == null) {
+                log.info("ADMISSION_BP traceId={} pid={} 入科血压不完整: systolic={} diastolic={}",
+                        patientTraceId, pid, sysDoc != null ? "found" : "null", diaDoc != null ? "found" : "null");
+                return;
+            }
+
+            String systolic = getValueFromDocByKey(sysDoc, "strVal", String.class);
+            String diastolic = getValueFromDocByKey(diaDoc, "strVal", String.class);
+            if (systolic == null || diastolic == null) {
+                log.info("ADMISSION_BP traceId={} pid={} 血压值为空: systolic={} diastolic={}", patientTraceId, pid, systolic, diastolic);
+                return;
+            }
+
+            VitalSignPayload payload = VitalSignPayload.builder()
+                    .vitalsignName("血压")
+                    .vitalsignType("1005")
+                    .vitalsignNVal1(systolic)
+                    .vitalsignNVal2(diastolic)
+                    .unit("mmHg")
+                    .build();
+
+            fillCommonFields(payload, patient, sysDoc, mongoTemplate, patientTraceId);
+            // 入科首条不锚定：planTime = recordTime = admissionDateTime
+            payload.setPlanTime(admissionDateTime);
+            payload.setRecordTime(admissionDateTime);
+
+            intermediateService.upsertPending(payload, patientTraceId);
+            log.info("ADMISSION_BP traceId={} pid={} 血压={}/{} planTime={} 入科血压回传完成",
+                    patientTraceId, pid, systolic, diastolic, admissionDateTime);
+        } catch (Exception e) {
+            log.error("ADMISSION_BP traceId={} pid={} 入科血压处理异常", patientTraceId, pid, e);
         }
     }
 

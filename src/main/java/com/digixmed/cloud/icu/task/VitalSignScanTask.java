@@ -606,7 +606,19 @@ public class VitalSignScanTask {
                     .unit("mmHg")
                     .build();
 
-            fillCommonFields(payload, patient, sysDoc, mongoTemplate, patientTraceId);
+            // 设置患者身份和记录者
+            payload.setPatientId(patientIdentityMapper.getPatientId(patient));
+            payload.setMrn(patientIdentityMapper.getMrn(patient));
+            payload.setPatientName(patientIdentityMapper.getPatientName(patient));
+            payload.setSeries(patientIdentityMapper.getSeries());
+            payload.setWardCode(patientIdentityMapper.getWardCode());
+            payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+            payload.setRecordNurseName("陈琳");
+            payload.setIsValid(1);
+            payload.setRemark("");
+            payload.setTraceId(patientTraceId);
+            payload.setMongoPid(getValueFromDocByKey(patient, "_id", Object.class) != null
+                    ? getValueFromDocByKey(patient, "_id", Object.class).toString() : null);
             // 入科首条不锚定：planTime = recordTime = admissionDateTime
             payload.setPlanTime(admissionDateTime);
             payload.setRecordTime(admissionDateTime);

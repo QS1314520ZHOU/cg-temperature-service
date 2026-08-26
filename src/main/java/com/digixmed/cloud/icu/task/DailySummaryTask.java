@@ -379,33 +379,58 @@ public class DailySummaryTask {
 
     /**
      * 处理大便次数
-     * 只使用 param_汇总大便次数，只获取07:00精确时刻的数据
+     * 只使用 param_汇总大便次数，只获取 window.end 对应的07:00精确时刻的数据
+     *
+     * 业务说明：
+     *   - 统计窗口 [window.start, window.end) 中，大便次数数据位于 window.end 的07:00时刻
+     *   - 查询时间：window.end（次日07:00）
+     *   - planTime：window.end
+     *   - 幂等键：使用 window.end 作为 planTime
      */
     private void processStoolCount(List<Document> records, Document patient, String pid,
                                     ClinicalTimeWindow window, String traceId) {
-        LocalDateTime point = timeWindowService.buildSevenAmPoint(window.getReportDate().toLocalDate());
-        Date start = Date.from(point.atZone(ZONE).toInstant());
-        Date end = new Date(start.getTime() + 1);
+        LocalDateTime point = window.getEnd();
+        Date pointDate = Date.from(point.atZone(ZONE).toInstant());
+
+        log.info("STOOL_QUERY traceId={} pid={} reportDate={} window=[{}, {}) point={}",
+                traceId,
+                pid,
+                window.getReportDate(),
+                window.getStart(),
+                window.getEnd(),
+                point);
 
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_汇总大便次数")
                 .and("valid").ne(false)
-                .and("time").gte(start).lt(end))
+                .and("time").is(pointDate))
                 .with(Sort.by(Sort.Direction.DESC, "editTime"))
                 .limit(1);
         Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
 
         if (stoolRecord == null) {
-            log.info("STEP_03 traceId={} pid={} 07:00时刻无汇总大便次数记录", traceId, pid);
+            log.info("STOOL_NOT_FOUND traceId={} pid={} point={} code=param_汇总大便次数",
+                    traceId, pid, point);
             return;
         }
-        VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient,
-                window.getEnd(), traceId);
-        if (payload != null) {
-            PayloadTimeNormalizer.anchor(payload, window.getEnd());
-            intermediateService.upsertPending(payload, traceId);
-            enqueueCounter.incrementAndGet();
+
+        Object bedsideId = stoolRecord.get("_id");
+        Object strVal = stoolRecord.get("strVal");
+        log.info("STOOL_FOUND traceId={} pid={} point={} bedsideId={} strVal={}",
+                traceId, pid, point, bedsideId, strVal);
+
+        VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient, point, traceId);
+        if (payload == null) {
+            log.warn("STOOL_PAYLOAD_NULL traceId={} pid={} point={} bedsideId={}",
+                    traceId, pid, point, bedsideId);
+            return;
         }
+
+        PayloadTimeNormalizer.anchor(payload, point);
+        Map<String, Object> result = intermediateService.upsertPending(payload, traceId);
+        enqueueCounter.incrementAndGet();
+        log.info("STOOL_ENQUEUED traceId={} pid={} point={} bedsideId={} result={}",
+                traceId, pid, point, bedsideId, result);
     }
 
     /**

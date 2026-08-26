@@ -589,3 +589,51 @@ Query historyQuery = new Query(Criteria.where("pid").is(pid)
 - BreathHandler：通过查询前一个小时的数据判断previousState，避免因记录缺失导致误判
 - VentilatorEventDetectTask：首次检测时查询历史状态，只有历史状态不是使用呼吸机且当前状态是使用呼吸机时才推送
 - 服务重启后，不会重复推送"使用呼吸机"事件
+
+---
+
+### 2026-08-26：修复大便次数（vitalsignType=1007）时间错位问题
+
+**问题描述**：
+大便次数（vitalsignType=1007）没有回传，因为查询时间与数据实际存储时间不一致。
+
+**根因分析**：
+1. 原代码查询 `window.start`（reportDate 当天 07:00）
+2. 但大便次数数据实际存储在 `window.end`（reportDate 次日 07:00）
+3. 导致查询不到数据，无法生成队列记录
+
+**修改文件**：
+1. `DailySummaryTask.java`：`processStoolCount` 方法
+2. `DailySummaryTaskTest.java`：新增单元测试
+
+**修改内容**：
+```java
+// 修改前：查询 window.start（reportDate 当天 07:00）
+LocalDateTime point = timeWindowService.buildSevenAmPoint(window.getReportDate().toLocalDate());
+Date start = Date.from(point.atZone(ZONE).toInstant());
+Date end = new Date(start.getTime() + 1);
+Query query = new Query(Criteria.where("pid").is(pid)
+        .and("code").is("param_汇总大便次数")
+        .and("valid").ne(false)
+        .and("time").gte(start).lt(end))
+
+// 修改后：查询 window.end（reportDate 次日 07:00）
+LocalDateTime point = window.getEnd();
+Date pointDate = Date.from(point.atZone(ZONE).toInstant());
+Query query = new Query(Criteria.where("pid").is(pid)
+        .and("code").is("param_汇总大便次数")
+        .and("valid").ne(false)
+        .and("time").is(pointDate))
+```
+
+**影响范围**：
+- DailySummaryTask：大便次数查询和入队逻辑
+- 其他体征、出入量、时间窗口、定时任务和推送状态机逻辑不受影响
+
+**验收标准**：
+1. `mvn test -Dtest=DailySummaryTaskTest` 通过（5个测试用例）
+2. 只修改大便次数相关代码和对应测试
+3. `git diff` 中没有无关格式化或重构
+4. `param_汇总大便次数` 位于 window.end 的07:00时，可以生成1007队列记录
+5. 队列记录的 `planTime` 与读取源记录的时间点一致
+6. 其他业务的输出、时间窗口、幂等键及推送状态不发生变化

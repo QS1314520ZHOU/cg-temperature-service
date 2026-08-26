@@ -28,7 +28,8 @@ public class DrainageOutputHandler extends BaseVitalSignHandler {
             "param_造瘘口量",
             "param_outuwuliang",
             "param_咯血",
-            "param_tanLiang"
+            "param_tanLiang",
+            "param_渗液"
     );
 
     public DrainageOutputHandler(PatientIdentityMapper patientIdentityMapper) {

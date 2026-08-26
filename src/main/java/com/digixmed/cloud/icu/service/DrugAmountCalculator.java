@@ -42,6 +42,11 @@ public class DrugAmountCalculator {
     @Autowired
     private MongoTemplate mongoTemplate;
 
+    /** 给药方法配置缓存（配置表很少变化，缓存1小时） */
+    private volatile List<Document> drugMethodsCache;
+    private volatile long drugMethodsCacheTime;
+    private static final long CACHE_TTL_MS = 3600_000L;
+
     /* ==== 数据结构 ==== */
 
     public static class DrugActualAmount {
@@ -114,11 +119,24 @@ public class DrugAmountCalculator {
     }
 
     /**
-     * 查询所有有效的给药方法配置
+     * 查询所有有效的给药方法配置（带缓存，1小时过期）
+     *
+     * configDrugMethod 是配置表，很少变化，缓存可避免每次汇总都全表扫描
      */
     public List<Document> queryDrugMethods() {
-        Query query = new Query(Criteria.where("valid").ne(false));
-        return mongoTemplate.find(query, Document.class, "configDrugMethod");
+        long now = System.currentTimeMillis();
+        if (drugMethodsCache != null && (now - drugMethodsCacheTime) < CACHE_TTL_MS) {
+            return drugMethodsCache;
+        }
+        synchronized (this) {
+            if (drugMethodsCache != null && (now - drugMethodsCacheTime) < CACHE_TTL_MS) {
+                return drugMethodsCache;
+            }
+            Query query = new Query(Criteria.where("valid").is(true));
+            drugMethodsCache = mongoTemplate.find(query, Document.class, "configDrugMethod");
+            drugMethodsCacheTime = now;
+            return drugMethodsCache;
+        }
     }
 
     /* ==== 核心算法 ==== */

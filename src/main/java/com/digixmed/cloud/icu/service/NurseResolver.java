@@ -98,7 +98,7 @@ public class NurseResolver {
     private String findEditUserFromParamYishi(String pid, Date startTime, Date endTime) {
         Query query = new Query(Criteria.where("code").is("param_Yishi")
                 .and("pid").is(pid)
-                .and("valid").is(true)
+                .and("valid").ne(false).ne(0)
                 .andOperator(
                         Criteria.where("time").gte(startTime),
                         Criteria.where("time").lt(endTime)
@@ -108,6 +108,11 @@ public class NurseResolver {
 
         Document doc = mongoTemplate.findOne(query, Document.class, "bedside");
         if (doc == null) {
+            return null;
+        }
+        // 二次过滤：排除 valid=false 的作废记录
+        Object valid = doc.get("valid");
+        if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
             return null;
         }
         return extractEditUser(doc);

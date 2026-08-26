@@ -51,10 +51,10 @@ vitalsign:
     lookback-hours: ${VITALSIGN_RECHECK_LOOKBACK_HOURS:24}
   # 每日汇总配置
   summary:
-    # 每天 08:00 执行一次汇总（只处理昨天的出入量）
-    cron: ${VITALSIGN_SUMMARY_CRON:0 0 8 * * ?}
-    # 变化检测：每小时检查昨天数据是否变化，变化则撤销重发（09:00~次日06:00）
-    check-cron: ${VITALSIGN_SUMMARY_CHECK_CRON:0 0 9-23,0-6 * * ?}
+    # 7-8点每5分钟执行一次汇总（只处理昨天的出入量）
+    cron: ${VITALSIGN_SUMMARY_CRON:0 0/5 7 * * ?}
+    # 变化检测：8点之后每30分钟检查数据是否变化，变化则撤销重发（08:00~23:30, 00:00~06:30）
+    check-cron: ${VITALSIGN_SUMMARY_CHECK_CRON:0 0/30 8-23,0-6 * * ?}
     # 汇总回看天数（报表日）
     lookback-days: ${VITALSIGN_SUMMARY_LOOKBACK_DAYS:1}
   patient:
@@ -81,8 +81,8 @@ digixmed:
   isUpload: true
   testPid: all
   rcron: 0 0/2 * * * ?
-  # 生命体征扫描：每小时10分执行（含标准点+每小时比对）
-  cron: 0 10 * * * ?
+  # 生命体征扫描：活跃时段(02/06/10/14/18/22点)每3分钟执行(:03~:30)，其他时段每30分钟执行(:00/:30)
+  cron: 0 */3 * * * ?
   deleteDay: 180
   backDay: 1
   timePointasd: 7

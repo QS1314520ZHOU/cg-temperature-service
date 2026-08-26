@@ -63,9 +63,10 @@ public class IntakeOutputCalculator {
 
     /**
      * 计算总入量(1009)
+     * 新口径：总入量 = 饮入量 + 输入量
      *
      * @param records           bedside 记录（窗口内）
-     * @param drugChannelTotals drugExe 按通道聚合的入量
+     * @param drugChannelTotals drugExe 按通道聚合的入量（保留参数兼容，实际不再使用）
      * @param traceId           追踪ID
      * @param pid               患者ID
      * @return 总入量（已 round1）
@@ -73,47 +74,36 @@ public class IntakeOutputCalculator {
     public BigDecimal sumTotalInput(List<Document> records,
                                      DrugAmountCalculator.DrugChannelTotals drugChannelTotals,
                                      String traceId, String pid) {
-        // bedside 三项
-        BigDecimal broughtTotal = sumBedsideByCode(records, "param_带入药量");
-        BigDecimal oralTotal = sumBedsideByCode(records, "param_kouFu");
-        BigDecimal tubeFeedingManual = sumBedsideByCode(records, "param_biSi");
+        // [DEBUG] 逐项分项日志
+        BigDecimal kouFuSum = sumBedsideByCode(records, "param_kouFu");
+        BigDecimal biSiSum = sumBedsideByCode(records, "param_biSi");
+        BigDecimal yaoStomachSum = sumBedsideByCode(records, "param_YaoStomach_in_hour");
+        BigDecimal daiRuYaoLiangSum = sumBedsideByCode(records, "param_带入药量");
+        BigDecimal yaoYetiSum = sumBedsideByCode(records, "param_YaoYeti_in_hour");
+        BigDecimal yaoShuXueSum = sumBedsideByCode(records, "param_YaoShuXue_in_hour");
 
-        // 静脉入量 = 输血 + 各静脉途径实算量
-        BigDecimal veinSum = BigDecimal.ZERO;
-        for (BigDecimal v : drugChannelTotals.vein.values()) {
-            veinSum = veinSum.add(v);
-        }
-        BigDecimal intravenousTotal = round1(drugChannelTotals.transfusion.add(veinSum));
-
-        // 鼻饲量 = 手工鼻饲 + 肠内营养泵入实算量
-        BigDecimal tubeFeedingAdj = round1(tubeFeedingManual.add(drugChannelTotals.enteral));
-
-        // 胃肠入量 = 口服(手工 + po执行) + 其他胃肠途径
-        BigDecimal gastroPo = oralTotal.add(
-                drugChannelTotals.gastro.getOrDefault("po", BigDecimal.ZERO));
-        BigDecimal gastroOtherSum = BigDecimal.ZERO;
-        for (Map.Entry<String, BigDecimal> entry : drugChannelTotals.gastro.entrySet()) {
-            if (!"po".equals(entry.getKey())) {
-                gastroOtherSum = gastroOtherSum.add(entry.getValue());
-            }
-        }
-        BigDecimal gastroTotal = round1(gastroPo.add(gastroOtherSum));
-
-        // 药物治疗 = 带入药量 + 静脉入量
-        BigDecimal drugTreatmentTotal = round1(broughtTotal.add(intravenousTotal));
-        // 胃肠摄入 = 鼻饲量 + 胃肠入量
-        BigDecimal gastrointestinalInputTotal = round1(tubeFeedingAdj.add(gastroTotal));
-
-        BigDecimal totalInput = round1(drugTreatmentTotal.add(gastrointestinalInputTotal));
-
-        log.info("IO_CALC traceId={} pid={} brought={} oral={} tubeManual={} " +
-                        "transfusion={} vein={} enteral={} gastroPo={} gastroOther={} " +
-                        "drugTreatment={} gastroInput={} totalInput={}",
+        log.info("IO_CALC traceId={} pid={} kouFu={} biSi={} yaoStomach_in_hour={}",
                 traceId, pid,
-                round1(broughtTotal), round1(oralTotal), round1(tubeFeedingManual),
-                round1(drugChannelTotals.transfusion), round1(veinSum),
-                round1(drugChannelTotals.enteral), round1(gastroPo), round1(gastroOtherSum),
-                drugTreatmentTotal, gastrointestinalInputTotal, totalInput);
+                kouFuSum.stripTrailingZeros().toPlainString(),
+                biSiSum.stripTrailingZeros().toPlainString(),
+                yaoStomachSum.stripTrailingZeros().toPlainString());
+        log.info("IO_CALC traceId={} pid={} daiRuYaoLiang={} yaoYeti_in_hour={} yaoShuXue_in_hour={}",
+                traceId, pid,
+                daiRuYaoLiangSum.stripTrailingZeros().toPlainString(),
+                yaoYetiSum.stripTrailingZeros().toPlainString(),
+                yaoShuXueSum.stripTrailingZeros().toPlainString());
+
+        // 饮入量 = param_kouFu + param_biSi + param_YaoStomach_in_hour
+        BigDecimal oralIntake = kouFuSum.add(biSiSum).add(yaoStomachSum);
+
+        // 输入量 = param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour
+        BigDecimal therapyInput = daiRuYaoLiangSum.add(yaoYetiSum).add(yaoShuXueSum);
+
+        // 总入量 = 饮入量 + 输入量
+        BigDecimal totalInput = round1(oralIntake.add(therapyInput));
+
+        log.info("IO_CALC traceId={} pid={} oralIntake={} therapyInput={} totalInput={}",
+                traceId, pid, round1(oralIntake), round1(therapyInput), totalInput);
 
         return totalInput;
     }

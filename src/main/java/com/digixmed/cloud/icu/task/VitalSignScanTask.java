@@ -126,14 +126,46 @@ public class VitalSignScanTask {
     @Autowired
     private PushTask pushTask;
 
+    /**
+     * 活跃时段：标准时间点所在小时（02/06/10/14/18/22），每3分钟执行(:03~:30)
+     * 非活跃时段：每30分钟执行(:00/:30)
+     */
+    private static final Set<Integer> ACTIVE_HOURS = Set.of(2, 6, 10, 14, 18, 22);
+
     @Scheduled(cron = "${digixmed.cron}")
     public void execute() {
         if (!autoEnabled) {
-            log.warn("SCAN_SKIPPED autoEnabled=false, 自动回传已关闭, 跳过本轮");
+            log.warn("SCAN_SKIPPED autoEnabled=false, auto disabled, skip");
             return;
         }
-        log.info("SCAN_TRIGGERED cron触发开始扫描");
+
+        LocalDateTime now = timeWindowService.now();
+        if (!shouldExecuteAt(now)) {
+            log.debug("SCAN_SKIPPED not in execution window, skip. now={}", now);
+            return;
+        }
+
+        log.info("SCAN_TRIGGERED cron triggered, start scan. now={}", now);
         doScan();
+    }
+
+    /**
+     * 判断当前时刻是否应该执行扫描
+     *
+     * 活跃时段(02/06/10/14/18/22点)：:03, :06, :09, :12, :15, :18, :21, :24, :27, :30
+     * 非活跃时段：:00, :30
+     */
+    private boolean shouldExecuteAt(LocalDateTime now) {
+        int hour = now.getHour();
+        int minute = now.getMinute();
+
+        if (ACTIVE_HOURS.contains(hour)) {
+            // 活跃时段：每3分钟，:03~:30
+            return minute >= 3 && minute <= 30 && minute % 3 == 0;
+        } else {
+            // 非活跃时段：每30分钟，:00/:30
+            return minute == 0 || minute == 30;
+        }
     }
 
     /** 原 execute() 的完整逻辑，供定时与手动共用 */
@@ -436,12 +468,12 @@ public class VitalSignScanTask {
                                  Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(CODE_PULSE)
-                .and("valid").ne(false)
+                .and("valid").ne(false).ne(0)
                 .andOperator(exactTimeCriteria(planTime)))
                 .with(Sort.by(Sort.Direction.DESC, "editTime"))
                 .limit(1);
 
-        Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+        Document bedside = filterValidRecord(mongoTemplate.findOne(query, Document.class, BEDSIDE));
         if (bedside == null) {
             log.debug("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} point={} 无脉搏数据", patientTraceId, pid, planTime);
             return false;
@@ -466,12 +498,12 @@ public class VitalSignScanTask {
 
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
-                    .and("valid").ne(false)
+                    .and("valid").ne(false).ne(0)
                     .andOperator(exactTimeCriteria(planTime)))
                     .with(Sort.by(Sort.Direction.DESC, "editTime"))
                     .limit(1);
 
-            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+            Document bedside = filterValidRecord(mongoTemplate.findOne(query, Document.class, BEDSIDE));
             if (bedside == null) {
                 log.info("STEP_03_QUERY traceId={} pid={} code={} 未找到bedside记录", patientTraceId, pid, sourceCode);
                 return false;
@@ -518,13 +550,13 @@ public class VitalSignScanTask {
 
             Query query = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(sourceCode)
-                    .and("valid").ne(false)
+                    .and("valid").ne(false).ne(0)
                     .and("time").gte(startTime).lt(endTime))
                     .with(Sort.by(Sort.Direction.ASC, "time")
                             .and(Sort.by(Sort.Direction.DESC, "editTime")))
                     .limit(1);
 
-            Document bedside = mongoTemplate.findOne(query, Document.class, BEDSIDE);
+            Document bedside = filterValidRecord(mongoTemplate.findOne(query, Document.class, BEDSIDE));
             if (bedside == null) {
                 log.info("ADMISSION_VITALS traceId={} pid={} code={} 窗口内未找到bedside记录", patientTraceId, pid, sourceCode);
                 return null;
@@ -568,22 +600,22 @@ public class VitalSignScanTask {
             // 查收缩压
             Query sysQuery = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(CODE_SYSTOLIC)
-                    .and("valid").ne(false)
+                    .and("valid").ne(false).ne(0)
                     .and("time").gte(startTime).lt(endTime))
                     .with(Sort.by(Sort.Direction.ASC, "time")
                             .and(Sort.by(Sort.Direction.DESC, "editTime")))
                     .limit(1);
-            Document sysDoc = mongoTemplate.findOne(sysQuery, Document.class, BEDSIDE);
+            Document sysDoc = filterValidRecord(mongoTemplate.findOne(sysQuery, Document.class, BEDSIDE));
 
             // 查舒张压
             Query diaQuery = new Query(Criteria.where("pid").is(pid)
                     .and("code").is(CODE_DIASTOLIC)
-                    .and("valid").ne(false)
+                    .and("valid").ne(false).ne(0)
                     .and("time").gte(startTime).lt(endTime))
                     .with(Sort.by(Sort.Direction.ASC, "time")
                             .and(Sort.by(Sort.Direction.DESC, "editTime")))
                     .limit(1);
-            Document diaDoc = mongoTemplate.findOne(diaQuery, Document.class, BEDSIDE);
+            Document diaDoc = filterValidRecord(mongoTemplate.findOne(diaQuery, Document.class, BEDSIDE));
 
             if (sysDoc == null || diaDoc == null) {
                 log.info("ADMISSION_BP traceId={} pid={} 入科血压不完整: systolic={} diastolic={}",
@@ -727,7 +759,7 @@ public class VitalSignScanTask {
 
         Query query = new Query(new Criteria().andOperator(
                 Criteria.where("code").in(codes),
-                Criteria.where("valid").ne(false),
+                Criteria.where("valid").ne(false).ne(0),
                 timeOr));
 
         return new LinkedHashSet<>(
@@ -769,9 +801,21 @@ public class VitalSignScanTask {
     /** 单个时间点的pid查询（血压等低频场景使用） */
     private Set<String> findPidsAtPoint(LocalDateTime point, List<String> codes) {
         Query query = new Query(Criteria.where("code").in(codes)
-                .and("valid").ne(false)
+                .and("valid").ne(false).ne(0)
                 .andOperator(exactTimeCriteria(point)));
         return new LinkedHashSet<>(
                 mongoTemplate.findDistinct(query, "pid", "bedside", String.class));
+    }
+
+    /**
+     * 二次过滤：检查bedside记录的valid字段，排除作废记录
+     */
+    private Document filterValidRecord(Document doc) {
+        if (doc == null) return null;
+        Object valid = doc.get("valid");
+        if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+            return null;
+        }
+        return doc;
     }
 }

@@ -57,9 +57,10 @@ FAILED → 推送中 → SUCCESS
 ### 推送触发方式
 | 触发源 | 时机 | 说明 |
 |--------|------|------|
-| `VitalSignScanTask` | 每小时:10扫描完成后 | 扫描写入队列后立即调用 `pushTask.pushOnce(traceId)` |
-| `DailySummaryTask` | 每天08:00汇总完成后 | 汇总写入队列后立即调用 `pushTask.pushOnce(traceId)` |
-| `DailySummaryTask.checkAndResend` | 每小时:10变化检测完成后 | 检测到变化重新入队后调用 `pushTask.pushOnce(traceId)` |
+| `VitalSignScanTask` | 活跃时段(02/06/10/14/18/22点)每3分钟(:03~:30)，非活跃时段每30分钟(:00/:30) | 扫描写入队列后立即调用 `pushTask.pushOnce(traceId)` |
+| `DailySummaryTask` | 7-8点每5分钟汇总完成后 | 汇总写入队列后立即调用 `pushTask.pushOnce(traceId)` |
+| `DailySummaryTask.checkAndResend` | 8点之后每30分钟变化检测完成后 | 检测到变化重新入队后调用 `pushTask.pushOnce(traceId)` |
+| `VentilatorEventDetectTask` | 每2分钟 | 呼吸机启用/停止事件立即推送 |
 | `PushTask` 定时兜底 | `0 */10 * * * ?`（每10分钟） | 兜底扫描，确保漏网的 FAILED 记录被处理 |
 
 ### 推送执行流程（PushTask.pushOnce）
@@ -131,17 +132,19 @@ FAILED → 推送中 → SUCCESS
 `07:00`（从10:00标准时间点起扫描）
 
 ### 每日汇总窗口
-`[前一天07:00, 当天07:00)` — 每日07:00执行
+`[前一天07:00, 当天07:00)` — 7-8点每5分钟执行，8点之后每30分钟执行
 
 ### 体温复测窗口
 `[标准时间点, 标准时间点+1小时)` — 体温>=38.5℃触发
 
 ## 扫描逻辑
 
-### VitalSignScanTask（每小时执行）
+### VitalSignScanTask（活跃时段每3分钟，非活跃时段每30分钟）
 根据当前时间扫描当前+之前的时间点窗口，支持补录数据：
-- 10:00执行 → 扫描 02:00、06:00、10:00 三个窗口
-- 14:00执行 → 扫描 02:00、06:00、10:00、14:00 四个窗口
+- 活跃时段(02/06/10/14/18/22点)：:03~:30每3分钟执行，如10:03扫描02:00、06:00、10:00，10:06再扫一次...
+- 非活跃时段：:00/:30每30分钟执行
+- 10:03执行 → 扫描 02:00、06:00、10:00 三个窗口
+- 14:03执行 → 扫描 02:00、06:00、10:00、14:00 四个窗口
 - 依此类推...
 
 **入科时间点扫描**：同时扫描患者入科时间（icuAdmissionTime）的生命体征数据
@@ -159,7 +162,7 @@ FAILED → 推送中 → SUCCESS
 | 血压 | param_nibp_s + param_nibp_d | 07:00 | 1005 |
 | 疼痛评分 | param_tengTong_score | 同上 | 1010 |
 
-### DailySummaryTask（每日07:00执行）
+### DailySummaryTask（7-8点每5分钟执行，8点之后每30分钟执行）
 | 项目 | 代码 | 说明 |
 |------|------|------|
 | 大便次数 | param_汇总大便次数 | 只查07:00数据 |
@@ -168,18 +171,18 @@ FAILED → 推送中 → SUCCESS
 | 输入量(1045) | param_带入药量 + param_YaoYeti_in_hour + param_YaoShuXue_in_hour | 窗口内求和 |
 | 总入量(1009) | 六项去重求和 | param_YaoShuXue_in_hour 不重复计算 |
 | 总出量(1010) | 固定七项 + `_tube_`通配 | 见下方说明 |
-| 排出物量(3125) | param_daBianAmount + param_造瘘口量 + param_outuwuliang + param_咯血 + param_tanLiang | 窗口内求和 |
+| 排出物量(3125) | param_daBianAmount + param_造瘘口量 + param_outuwuliang + param_咯血 + param_tanLiang + param_渗液 | 窗口内求和 |
 | 胃管负压引流 | param_tube_胃肠减压 | 窗口内求和 |
 | 其他引流量 | code含`_tube_`但非胃肠减压 | 窗口内求和 |
 | 净超滤量 | param_chaoLvLiang | 窗口内求和 |
 | 身高 | dFormData sg/fg | 1013 |
 | 体重 | dFormData tz/zt | 1014 |
 
-**总出量(1010)固定七项**：param_niaoLiang, param_daBianAmount, param_outuwuliang, param_造瘘口量, param_咯血, param_tanLiang, param_tube_胃肠减压
+**总出量(1010)固定八项**：param_niaoLiang, param_daBianAmount, param_outuwuliang, param_造瘘口量, param_咯血, param_tanLiang, param_渗液, param_tube_胃肠减压
 **总出量通配**：所有 code 含 `_tube_` 的记录（与固定项去重，param_tube_胃肠减压 不重复计算）
 
-### 每小时变化检测（checkAndResendScheduled）
-- **频率**：每小时:10执行（`0 10 * * * ?`）
+### 变化检测（checkAndResendScheduled）
+- **频率**：8点之后每30分钟执行（`0 0/30 8-23,0-6 * * ?`）
 - **检测范围**：**昨天 + 前天**两天的数据
   - 昨天窗口：`[yesterday 07:00, today 07:00)`
   - 前天窗口：`[dayBeforeYesterday 07:00, yesterday 07:00)`
@@ -199,6 +202,31 @@ FAILED → 推送中 → SUCCESS
    - 未找到且窗口未关闭 → 更新尝试次数，等待下次扫描
    - 未找到且窗口已关闭 → 标记完成
 5. 最大尝试次数：6次
+
+## 呼吸机事件实时检测
+
+### 数据源
+- `param_XiYangTuJing.strVal` — 给氧途径
+- 呼吸机标识判定值：`无创`、`有创`、`高流量湿化氧疗`
+
+### 检测机制
+| 触发源 | 时机 | 检测内容 |
+|--------|------|----------|
+| `VentilatorEventDetectTask` | 每2分钟 | 非整点呼吸机启用/停止事件 |
+| `BreathHandler`（标准时间点扫描） | 每小时:10 | 标准时间点的呼吸机状态 |
+
+### VentilatorEventDetectTask（每2分钟）
+- 查询所有有 `param_XiYangTuJing` 记录的患者
+- 对比内存中上次状态，检测状态变化：
+  - NOT_USING → USING：新记录出现呼吸机标识 → 立即推送
+  - USING → NOT_USING：由 BreathHandler 在标准时间点检测并推送
+- planTime = recordTime = 记录实际时间（不锚定标准时间点）
+- 首次运行只初始化状态，不推送（防止启动时误推）
+
+### BreathHandler 标准时间点逻辑
+- USING：当前窗口内 `param_XiYangTuJing.strVal` 为三种值之一 → 推送"使用呼吸机"
+- STOPPED：上一时间点 USING，当前窗口无呼吸机标识 → 推送"停止呼吸机"
+- NOT_USING：无呼吸机标识，上一状态也不是 USING → 推送呼吸值
 
 ## 身高体重逻辑
 
@@ -235,10 +263,11 @@ vitalsign.patient.ward-code: 125011
 vitalsign.patient.record-nurse-id: 041660
 
 # 定时任务
-digixmed.cron: 0 10 * * * ?                    # 生命体征扫描：每小时:10
+digixmed.cron: 0 */3 * * * ?                    # 生命体征扫描：每3分钟，活跃时段(:03~:30)非活跃时段(:00/:30)由代码过滤
 vitalsign.push.cron: 0 */10 * * * ?            # 推送兜底：每10分钟
-vitalsign.summary.cron: 0 0 8 * * ?            # 每日汇总：每天08:00
-vitalsign.summary.check-cron: 0 10 * * * ?     # 变化检测：每小时:10
+vitalsign.summary.cron: 0 0/5 7 * * ?          # 每日汇总：7-8点每5分钟
+vitalsign.summary.check-cron: 0 0/30 8-23,0-6 * * ?  # 变化检测：8点之后每30分钟
+# 呼吸机事件检测：每2分钟（硬编码cron，不可配置）
 vitalsign.summary.lookback-days: 1             # 汇总回看天数
 
 # KingBase数据源
@@ -295,6 +324,7 @@ spring.datasource.kingbase.password: 密码
 | `/health` | GET | 健康检查 |
 | `/queue/stats` | GET | 队列状态统计（PENDING/SENDING/SUCCESS/RETRY/DEAD） |
 | `/scan/patient` | POST | 手动触发指定患者数据扫描（含入科时间点、出入量） |
+| `/manual/scanAndPush` | POST | 批量扫描在科患者并立即推送（用于数据修正） |
 
 ### /scan/patient 参数
 | 参数 | 类型 | 必填 | 说明 |
@@ -309,17 +339,32 @@ spring.datasource.kingbase.password: 密码
 - 血压（07:00）
 - 每日汇总（出入量）：大便次数、小便量、饮入量、治疗输入量、总输入量、总出量、排出物量、胃管负压引流、其他引流量、净超滤量、身高体重
 
+### /manual/scanAndPush 参数
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| targetDate | LocalDate | 是 | 目标日期（yyyy-MM-dd） |
+| hours | String | 否 | 时间点(小时)，逗号分隔，如"2,6,10,14"。为空则扫描全部6个时间点 |
+
+使用示例：
+```bash
+# 重新扫描今天2/6/10/14四个时间点并立即推送
+curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23&hours=2,6,10,14"
+
+# 重新扫描今天全部6个时间点并立即推送
+curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23"
+```
+
 ## 文件结构
 
 ```
 src/main/java/com/digixmed/cloud/icu/
 ├── config/          # 配置类（Swagger, SOAP, DataSource）
-├── controller/      # REST端点（健康检查、队列统计）
+├── controller/      # REST端点（健康检查、队列统计、批量扫描推送）
 ├── handler/         # 体征处理器（每种体征一个Handler）
 ├── model/           # 模型（VitalSignPayload, Patient, ClinicalTimeWindow）
 ├── repository/      # KingBase Repository
 ├── service/         # 服务层（IntermediateService, PushService, ClinicalTimeWindowService）
-├── task/            # 定时任务（VitalSignScanTask, PushTask, DailySummaryTask, TemperatureRecheckTask）
+├── task/            # 定时任务（VitalSignScanTask, PushTask, DailySummaryTask, TemperatureRecheckTask, VentilatorEventDetectTask）
 └── util/            # 工具类（XMLUtils, DateUtils, TraceIdGenerator）
 ```
 
@@ -330,3 +375,217 @@ src/main/java/com/digixmed/cloud/icu/
 3. **左闭右开**：所有时间窗口采用 `[start, end)`，禁止使用 23:59:59
 4. **参数化查询**：SQL必须参数化，禁止拼接
 5. **幂等推送**：相同内容不重复推送，内容变化才重新推送
+6. **逻辑修改规则**：修改业务逻辑（统计规则、计算方式、时间窗口等）前必须先与用户确认，不得自行修改
+7. **MongoDB orOperator**：Spring Data MongoDB 的 `Criteria.orOperator()` 会创建顶层 `$or`，绕过前面的 AND 条件。需要与 AND 条件组合时，必须用 `.andOperator(new Criteria().orOperator(...))` 包裹，禁止直接链式调用 `.orOperator()`
+8. **valid过滤**：所有bedside集合查询必须包含 `.and("valid").ne(false)` 过滤条件，排除已作废的记录
+
+## 修改历史
+
+### 2026-08-23：新增批量扫描推送接口 /manual/scanAndPush
+
+**需求**：
+数据修正场景：修改业务逻辑后（如呼吸机状态判断），需要重新扫描并推送历史数据。
+
+**实现方案**：
+新增 `/manual/scanAndPush` 接口，支持：
+1. 指定目标日期
+2. 可选指定时间点（小时），逗号分隔
+3. 扫描完成后立即推送
+
+**修改文件**：
+1. `Controller.java`：新增 `/manual/scanAndPush` 接口
+
+**使用示例**：
+```bash
+# 重新扫描今天2/6/10/14四个时间点并立即推送
+curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23&hours=2,6,10,14"
+```
+
+---
+
+### 2026-08-23：修复BreathHandler呼吸机状态判断逻辑
+
+**问题描述**：
+BreathHandler在每个标准时间点都发送"使用呼吸机"，即使患者一直在使用呼吸机。正确行为应该是：只在开始使用时发送一次"使用呼吸机"，持续使用时发送呼吸具体值。
+
+**根因分析**：
+原逻辑：只要 `currentState == USING` 就发送"使用呼吸机"
+正确逻辑：只有 NOT_USING → USING 的转换点才发送"使用呼吸机"
+
+**修改文件**：
+1. `BreathHandler.java`
+
+**修改内容**：
+```java
+// 修改前：currentState == USING 就发"使用呼吸机"
+if (currentState == VentilatorState.USING) {
+    // 发送"使用呼吸机"
+}
+
+// 修改后：只有转换点才发"使用呼吸机"
+if (previousState == VentilatorState.NOT_USING && currentState == VentilatorState.USING) {
+    // 转换点：从未使用 -> 使用呼吸机（只在开始使用时发一次）
+} else if (previousState == VentilatorState.USING && currentState == VentilatorState.NOT_USING) {
+    // 转换点：从使用 -> 停止呼吸机（只发一次）
+} else if (previousState == VentilatorState.USING && currentState == VentilatorState.USING) {
+    // 持续使用呼吸机：发呼吸具体值，不发"使用呼吸机"
+} else {
+    // 普通呼吸（从未使用呼吸机）
+}
+```
+
+**行为说明**：
+- 患者开始使用呼吸机（NOT_USING → USING）→ 发送"使用呼吸机"
+- 患者持续使用呼吸机（USING → USING）→ 发送呼吸具体值
+- 患者停止使用呼吸机（USING → NOT_USING）→ 发送"停止呼吸机"
+- 患者从未使用呼吸机（NOT_USING → NOT_USING）→ 发送呼吸具体值
+
+---
+
+### 2026-08-23：VitalSignScanTask调度频率优化
+
+**需求**：
+活跃时段(02/06/10/14/18/22点)每3分钟执行一次(:03~:30)，非活跃时段每30分钟执行(:00/:30)。
+
+**实现方案**：
+1. cron改为 `0 */3 * * * ?`（每3分钟触发）
+2. execute()中增加 `shouldExecuteAt()` 时间过滤：
+   - 活跃时段：minute >= 3 && minute <= 30 && minute % 3 == 0
+   - 非活跃时段：minute == 0 || minute == 30
+
+**修改文件**：
+1. `application.yml`：digixmed.cron 改为 `0 */3 * * * ?`
+2. `VitalSignScanTask.java`：execute()增加时间过滤逻辑
+
+---
+
+### 2026-08-23：修复orOperator语法导致valid=false记录未被过滤
+
+**问题描述**：
+出入量统计查询中，`valid=false` 的作废记录未被排除，导致饮入量等指标计算偏大。
+
+**根因分析**：
+MongoDB查询中 `.orOperator(Criteria...)` 会创建顶层 `$or`，把前面的 AND 条件（包括 `valid != false`）拆散，导致 `valid` 过滤失效。
+
+示例：患者6a83f625d3f5ba72ab12d672的 param_YaoStomach_in_hour，数据库有4条有效记录（146.7），但代码查出5条（含1条valid=false的20ml），结果错误回传166.7。
+
+**修改文件**：
+1. `DailySummaryTask.java` 第345-352行
+2. `Controller.java` 第715-721行
+
+**修改内容**：
+```java
+// 修改前（orOperator创建顶层$or，绕过valid过滤）：
+Query query = new Query(Criteria.where("pid").is(pid)
+        .and("valid").ne(false)
+        .and("time").gte(startDate).lt(endDate)
+        .orOperator(
+                Criteria.where("code").in(intakeOutputCodes),
+                Criteria.where("code").regex("_tube_")
+        )).limit(1000);
+
+// 修改后（用andOperator包裹orOperator）：
+Query query = new Query(Criteria.where("pid").is(pid)
+        .and("valid").ne(false)
+        .and("time").gte(startDate).lt(endDate)
+        .andOperator(
+                new Criteria().orOperator(
+                        Criteria.where("code").in(intakeOutputCodes),
+                        Criteria.where("code").regex("_tube_")
+                )
+        )).limit(1000);
+```
+
+**额外修复**：Controller.java 原查询缺少 `valid != false` 过滤条件，已补充。
+
+**影响范围**：
+- DailySummaryTask：自动汇总和变化检测的bedside查询
+- Controller：手动扫描接口的bedside查询
+
+**验证结果**（患者6a83f625d3f5ba72ab12d672，2026-08-22 07:00~2026-08-23 07:00）：
+| 项目 | 修改前 | 修改后 | 正确值 |
+|------|--------|--------|--------|
+| 饮入量(1044) | 166.7 | 146.7 | 146.7 ✓ |
+
+---
+
+### 2026-08-22：修复出入量统计时间窗口边界条件
+
+**问题描述**：
+出入量统计的时间窗口边界条件错误，导致：
+- 饮入量计算错误（多了07:00整点的记录）
+- 输入量计算错误（多了07:00整点的记录）
+
+**根因分析**：
+代码中使用了左开右闭 `time > start AND time <= end`，与CLAUDE.md规定的左闭右开 `[start, end)` 不一致。
+
+**修改文件**：
+1. `DailySummaryTask.java`
+   - 第320-325行：查询窗口内所有bedside记录
+   - 第706行：findCandidatePids方法
+2. `TemperatureRecheckTask.java`
+   - 第136-141行：体温复测窗口查询
+
+**修改内容**：
+```java
+// 修改前（左开右闭）：(start, end]
+.and("time").gt(startDate).lte(endDate))
+
+// 修改后（左闭右开）：[start, end)
+.and("time").gte(startDate).lt(endDate))
+```
+
+**影响范围**：
+- DailySummaryTask：出入量统计（饮入量、输入量、总入量、总出量等）
+- TemperatureRecheckTask：体温复测窗口查询
+
+**验证结果**（患者6a85bdf9d3f5ba72ab12dd3e，2026-08-22）：
+| 项目 | 修改前 | 修改后 | 正确值 |
+|------|--------|--------|--------|
+| 饮入量(1044) | 270 | 400 | 400 ✓ |
+| 输入量(1045) | 179.4 | 1236.5 | 1236.5 ✓ |
+| 总入量(1009) | 270 | 1636.5 | 1636.5 ✓ |
+
+---
+
+### 2026-08-23：优化呼吸机状态历史判断逻辑
+
+**问题描述**：
+患者已经使用了几天呼吸机，之前也手动添加了"使用呼吸机"记录。服务重启后，内存状态丢失，可能导致重复推送"使用呼吸机"事件。
+
+**根因分析**：
+1. BreathHandler的`resolvePreviousVentilatorState`只查询当前时间点之前的记录，无法准确判断历史状态
+2. VentilatorEventDetectTask首次检测时，如果内存状态为空，会推送"使用呼吸机"事件，即使患者已经在使用呼吸机
+
+**解决方案**：
+查询当前时间点前一个小时的数据来判断历史状态，避免重复推送。
+
+**修改文件**：
+1. `BreathHandler.java`：`resolvePreviousVentilatorState`方法
+2. `VentilatorEventDetectTask.java`：`detectEvent`方法
+
+**修改内容**：
+```java
+// BreathHandler.java：查询当前时间点前一个小时的数据
+Date oneHourBefore = Date.from(planTime.minusHours(1).atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+Query query = new Query(Criteria.where("pid").is(pid)
+        .and("code").is(VENTILATOR_ROUTE_CODE)
+        .and("time").gte(oneHourBefore).lt(currentTime)
+        .and("valid").ne(false).ne(0)
+).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "time"))
+        .limit(1);
+
+// VentilatorEventDetectTask.java：首次检测时查询历史状态
+Date oneHourBefore = Date.from(nowDate.toInstant().minus(java.time.Duration.ofHours(1)));
+Query historyQuery = new Query(Criteria.where("pid").is(pid)
+        .and("code").is(VENTILATOR_ROUTE_CODE)
+        .and("time").gte(oneHourBefore).lt(nowDate)
+        .and("valid").ne(false).ne(0))
+        .with(Sort.by(Sort.Direction.DESC, "time"))
+        .limit(1);
+```
+
+**行为说明**：
+- BreathHandler：通过查询前一个小时的数据判断previousState，避免因记录缺失导致误判
+- VentilatorEventDetectTask：首次检测时查询历史状态，只有历史状态不是使用呼吸机且当前状态是使用呼吸机时才推送
+- 服务重启后，不会重复推送"使用呼吸机"事件

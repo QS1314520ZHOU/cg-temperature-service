@@ -1,0 +1,818 @@
+// 1
+{
+    "_id": ObjectId("6a88ed6ef0d59353916526ee"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoStomach_in_hour",
+    "time": ISODate("2026-08-22T00:00:00.000Z"),
+    "strVal": "20",
+    "fVal": 20,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbda7",
+    "editTime": ISODate("2026-08-22T00:37:55.826Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 2
+{
+    "_id": ObjectId("6a8992b3f0d59353916538b4"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoStomach_in_hour",
+    "time": ISODate("2026-08-22T11:00:00.000Z"),
+    "strVal": "100",
+    "fVal": 100,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T12:14:43.896Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 3
+{
+    "_id": ObjectId("6a89b7ff37a75f5050118452"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoStomach_in_hour",
+    "time": ISODate("2026-08-22T12:00:00.000Z"),
+    "strVal": "50",
+    "fVal": 50,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:53:51.536Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 4
+{
+    "_id": ObjectId("6a89b7ff37a75f5050118451"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoStomach_in_hour",
+    "time": ISODate("2026-08-22T14:00:00.000Z"),
+    "strVal": "150",
+    "fVal": 150,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:53:51.534Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 5
+{
+    "_id": ObjectId("6a88d8eef0d5935391652583"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-21T23:00:00.000Z"),
+    "strVal": "2",
+    "fVal": 2,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-21T23:02:06.88Z"),
+            "accountId": "6a1f9f01e467916d244bbda7",
+            "desc": "0.1"
+        },
+        {
+            "time": ISODate("2026-08-21T23:15:08.617Z"),
+            "accountId": "6a1f9f01e467916d244bbda7",
+            "desc": "0.5"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbda7",
+    "editTime": ISODate("2026-08-22T00:29:34.773Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 6
+{
+    "_id": ObjectId("6a88ed6ef0d59353916526ed"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T00:00:00.000Z"),
+    "strVal": "2",
+    "fVal": 2,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T00:29:34.767Z"),
+            "desc": "1"
+        },
+        {
+            "time": ISODate("2026-08-22T00:37:55.824Z"),
+            "accountId": "6a1f9f01e467916d244bbda7",
+            "desc": "1.3"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbda7",
+    "editTime": ISODate("2026-08-22T01:34:07.22Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 7
+{
+    "_id": ObjectId("6a88fc9bf0d593539165283e"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T01:00:00.000Z"),
+    "strVal": "131",
+    "fVal": 131,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T01:51:37.966Z"),
+            "accountId": "6a1f9f01e467916d244bbda8",
+            "desc": "1.7"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbda8",
+    "editTime": ISODate("2026-08-22T02:52:41.215Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 8
+{
+    "_id": ObjectId("6a890ef9f0d5935391652a61"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T02:00:00.000Z"),
+    "strVal": "100",
+    "fVal": 100,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T02:52:41.213Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "89.6"
+        },
+        {
+            "time": ISODate("2026-08-22T03:36:42.674Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "102"
+        }
+    ],
+    "editUser": "666a7c3f5f7b871cf8ac79fd",
+    "editTime": ISODate("2026-08-22T06:53:21.961Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 9
+{
+    "_id": ObjectId("6a89194af0d5935391652bec"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T03:00:00.000Z"),
+    "strVal": "49.2",
+    "fVal": 49.1666679382324,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T03:36:42.677Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "1.2"
+        },
+        {
+            "time": ISODate("2026-08-22T03:40:36.851Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "1.4"
+        },
+        {
+            "time": ISODate("2026-08-22T03:55:03.289Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "1.8"
+        },
+        {
+            "time": ISODate("2026-08-22T04:14:13.868Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "2"
+        },
+        {
+            "time": ISODate("2026-08-22T04:40:07.095Z"),
+            "accountId": "666a7c3f5f7b871cf8ac79fd",
+            "desc": "51.2"
+        }
+    ],
+    "editUser": "666a7c3f5f7b871cf8ac79fd",
+    "editTime": ISODate("2026-08-22T06:53:21.966Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 10
+{
+    "_id": ObjectId("6a892215f0d5935391652c21"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T04:00:00.000Z"),
+    "strVal": "83.3",
+    "fVal": 83.3333358764648,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T04:14:13.866Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "0.5"
+        },
+        {
+            "time": ISODate("2026-08-22T04:40:07.092Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "51.5"
+        },
+        {
+            "time": ISODate("2026-08-22T04:43:59.75Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "58.1"
+        },
+        {
+            "time": ISODate("2026-08-22T04:45:09.827Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "60.1"
+        },
+        {
+            "time": ISODate("2026-08-22T05:23:55.619Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "85.3"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdaa",
+    "editTime": ISODate("2026-08-22T06:53:21.959Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 11
+{
+    "_id": ObjectId("6a89326bf0d5935391652f15"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T05:00:00.000Z"),
+    "strVal": "56.7",
+    "fVal": 56.6666679382324,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T05:23:55.621Z"),
+            "accountId": "6a72f6163ca72f3e8db3c614",
+            "desc": "40.7"
+        }
+    ],
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T06:53:21.964Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 12
+{
+    "_id": ObjectId("6a894a30f0d5935391653111"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T07:00:00.000Z"),
+    "strVal": "21.7",
+    "fVal": 21.6666660308838,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T07:05:20.663Z"),
+            "accountId": "6a72f6163ca72f3e8db3c614",
+            "desc": "20"
+        }
+    ],
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T09:30:39.528Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 13
+{
+    "_id": ObjectId("6a896c3ef0d5935391653518"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T08:00:00.000Z"),
+    "strVal": "105",
+    "fVal": 105,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T09:30:38.453Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "100"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdaa",
+    "editTime": ISODate("2026-08-22T12:12:48.173Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 14
+{
+    "_id": ObjectId("6a896c3ef0d5935391653517"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T09:00:00.000Z"),
+    "strVal": "228",
+    "fVal": 228,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T09:30:38.451Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "51.1"
+        },
+        {
+            "time": ISODate("2026-08-22T09:46:17.766Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "77.2"
+        },
+        {
+            "time": ISODate("2026-08-22T09:46:21.478Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "77.3"
+        },
+        {
+            "time": ISODate("2026-08-22T10:05:55.842Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "100"
+        },
+        {
+            "time": ISODate("2026-08-22T12:12:48.167Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "225"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdaa",
+    "editTime": ISODate("2026-08-22T12:33:07.321Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 15
+{
+    "_id": ObjectId("6a897483f0d59353916535a4"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T10:00:00.000Z"),
+    "strVal": "108",
+    "fVal": 108,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T10:05:55.844Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "9.9"
+        },
+        {
+            "time": ISODate("2026-08-22T10:06:08.407Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "10.2"
+        },
+        {
+            "time": ISODate("2026-08-22T10:37:08.423Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "61.9"
+        },
+        {
+            "time": ISODate("2026-08-22T12:12:48.171Z"),
+            "accountId": "6a1f9f01e467916d244bbdaa",
+            "desc": "105"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdaa",
+    "editTime": ISODate("2026-08-22T12:33:07.326Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 16
+{
+    "_id": ObjectId("6a899240f0d59353916538ae"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T11:00:00.000Z"),
+    "strVal": "108",
+    "fVal": 108,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T12:12:48.165Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "105"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T12:33:07.319Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 17
+{
+    "_id": ObjectId("6a899240f0d59353916538af"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T12:00:00.000Z"),
+    "strVal": "106.8",
+    "fVal": 106.751113891602,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T12:12:48.169Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "22.4"
+        },
+        {
+            "time": ISODate("2026-08-22T12:14:43.898Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "25.8"
+        },
+        {
+            "time": ISODate("2026-08-22T12:33:07.323Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "58.4"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:50:52.293Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 18
+{
+    "_id": ObjectId("6a89b74c37a75f5050118443"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T13:00:00.000Z"),
+    "strVal": "11.3",
+    "fVal": 11.3333435058594,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:50:52.295Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 19
+{
+    "_id": ObjectId("6a89b74c37a75f5050118442"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T14:00:00.000Z"),
+    "strVal": "8.2",
+    "fVal": 8.16666698455811,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T14:50:52.29Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "6.8"
+        },
+        {
+            "time": ISODate("2026-08-22T14:53:51.531Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "7.2"
+        },
+        {
+            "time": ISODate("2026-08-22T14:56:11.941Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "7.5"
+        },
+        {
+            "time": ISODate("2026-08-22T14:58:42.38Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "8"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T17:12:41.764Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 20
+{
+    "_id": ObjectId("6a89d88937a75f505011879e"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T15:00:00.000Z"),
+    "strVal": "10",
+    "fVal": 10,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T17:12:41.77Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 21
+{
+    "_id": ObjectId("6a89d88937a75f505011879d"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T16:00:00.000Z"),
+    "strVal": "10",
+    "fVal": 10,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T17:12:41.769Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 22
+{
+    "_id": ObjectId("6a89d88937a75f505011879c"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T17:00:00.000Z"),
+    "strVal": "127.4",
+    "fVal": 127.366668701172,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T17:12:41.767Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "2.1"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T19:25:09.051Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 23
+{
+    "_id": ObjectId("6a89f79537a75f5050118a74"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T18:00:00.000Z"),
+    "strVal": "12",
+    "fVal": 12,
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T19:25:09.047Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 24
+{
+    "_id": ObjectId("6a89f79537a75f5050118a75"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T19:00:00.000Z"),
+    "strVal": "15.8",
+    "fVal": 15.8000001907349,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T19:25:09.05Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "5"
+        },
+        {
+            "time": ISODate("2026-08-22T19:38:45.319Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "9.4"
+        },
+        {
+            "time": ISODate("2026-08-22T19:45:20.304Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "11.4"
+        },
+        {
+            "time": ISODate("2026-08-22T19:46:00.266Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "11.6"
+        },
+        {
+            "time": ISODate("2026-08-22T19:46:25.324Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "11.7"
+        },
+        {
+            "time": ISODate("2026-08-22T19:46:50.685Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "11.9"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T21:19:32.283Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 25
+{
+    "_id": ObjectId("6a8a126437a75f5050118dcb"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T20:00:00.000Z"),
+    "strVal": "9.3",
+    "fVal": 9.33333301544189,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T21:19:32.285Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "16.5"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T22:12:15.896Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 26
+{
+    "_id": ObjectId("6a8a126437a75f5050118dca"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T21:00:00.000Z"),
+    "strVal": "7",
+    "fVal": 7,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T21:19:32.28Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "4.9"
+        },
+        {
+            "time": ISODate("2026-08-22T21:20:14.098Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "5.1"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T22:12:15.892Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 27
+{
+    "_id": ObjectId("6a8a1ebf37a75f5050118de0"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_YaoYeti_in_hour",
+    "time": ISODate("2026-08-22T22:00:00.000Z"),
+    "strVal": "7",
+    "fVal": 7,
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T22:12:15.894Z"),
+            "accountId": "6a1f9f01e467916d244bbdbc",
+            "desc": "1.4"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T23:02:59.127Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 28
+{
+    "_id": ObjectId("6a894a3bf0d5935391653112"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T00:05:00.000Z"),
+    "strVal": "20",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T07:05:35.691Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 29
+{
+    "_id": ObjectId("6a89298df0d5935391652d62"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T03:00:00.000Z"),
+    "strVal": "50",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T04:46:08.517Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 30
+{
+    "_id": ObjectId("6a894b98f0d5935391653183"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T04:00:00.000Z"),
+    "strVal": "100",
+    "valid": true,
+    "remark": "稀饭",
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T07:11:28.639Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 31
+{
+    "_id": ObjectId("6a894bacf0d5935391653184"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T06:00:00.000Z"),
+    "strVal": "50",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T07:11:42.632Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 32
+{
+    "_id": ObjectId("6a894ddff0d5935391653209"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T07:01:00.000Z"),
+    "strVal": "20",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a72f6163ca72f3e8db3c614",
+    "editTime": ISODate("2026-08-22T07:21:06.323Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 33
+{
+    "_id": ObjectId("6a899261f0d59353916538b0"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T10:15:00.000Z"),
+    "strVal": "30",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:54:15.848Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 34
+{
+    "_id": ObjectId("6a89b76337a75f5050118446"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T11:00:00.000Z"),
+    "valid": false,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T14:51:18.957Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "150"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:51:52.988Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 35
+{
+    "_id": ObjectId("6a89b80a37a75f5050118458"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T13:00:00.000Z"),
+    "strVal": "20",
+    "valid": true,
+    "remark": "温水",
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:54:05.907Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 36
+{
+    "_id": ObjectId("6a89b77637a75f5050118449"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T14:00:00.000Z"),
+    "valid": false,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T14:51:50.539Z"),
+            "accountId": "6a1f9f01e467916d244bbdb3",
+            "desc": "150"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdb3",
+    "editTime": ISODate("2026-08-22T14:51:51.909Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 37
+{
+    "_id": ObjectId("6a8a127237a75f5050118dcc"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T19:00:00.000Z"),
+    "strVal": "100",
+    "valid": true,
+    "remark": "温开水",
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T21:19:51.631Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 38
+{
+    "_id": ObjectId("6a8a127a37a75f5050118dcd"),
+    "pid": "6a85bdf9d3f5ba72ab12dd3e",
+    "code": "param_kouFu",
+    "time": ISODate("2026-08-22T21:00:00.000Z"),
+    "strVal": "100",
+    "valid": true,
+    "remark": "温开水",
+    "editUser": "6a1f9f01e467916d244bbdbc",
+    "editTime": ISODate("2026-08-22T21:20:00.965Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}

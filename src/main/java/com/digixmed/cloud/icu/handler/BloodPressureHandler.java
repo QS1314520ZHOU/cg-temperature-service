@@ -122,13 +122,20 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
     private Document findRecordByCode(String pid, Date startTime, Date endTime, String code) {
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(code)
-                .and("valid").ne(false)
+                .and("valid").ne(false).ne(0)
                 .and("time").gte(startTime).lt(endTime)
         ).with(org.springframework.data.domain.Sort.by(
                 org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
                 .limit(1);
 
-        return mongoTemplate.findOne(query, Document.class, "bedside");
+        Document doc = mongoTemplate.findOne(query, Document.class, "bedside");
+        if (doc != null) {
+            Object valid = doc.get("valid");
+            if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                return null;
+            }
+        }
+        return doc;
     }
 
     private String maskPid(String pid) {

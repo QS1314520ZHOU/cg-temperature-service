@@ -133,15 +133,22 @@ public class TemperatureRecheckTask {
             return "DONE";
         }
 
-        // 查询 (originalTime, originalTime+1小时] 内的 param_T 复测数据
+        // 查询 [originalTime, originalTime+1小时) 内的 param_T 复测数据（左闭右开）
         Date recheckWindowEnd = new Date(originalTime.getTime() + RECHECK_WINDOW_MS);
 
         Query recheckQuery = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_T")
-                .and("time").gt(originalTime).lte(recheckWindowEnd)
-                .and("valid").is(true));
+                .and("time").gte(originalTime).lt(recheckWindowEnd)
+                .and("valid").ne(false).ne(0));
 
         List<Document> recheckDocs = mongoTemplate.find(recheckQuery, Document.class, BEDSIDE_COLLECTION);
+        // 二次过滤：排除 valid=false 的作废记录
+        if (recheckDocs != null) {
+            recheckDocs.removeIf(doc -> {
+                Object valid = doc.get("valid");
+                return Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid);
+            });
+        }
         int candidateCount = recheckDocs == null ? 0 : recheckDocs.size();
 
         String recheckValue = null;

@@ -2,6 +2,7 @@ package com.digixmed.cloud.icu.task;
 
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Calendar;
 import java.util.Date;
+import java.util.List;
 
 /**
  * 历史日志清理任务
@@ -23,6 +25,8 @@ import java.util.Date;
  * 输出：删除过期记录
  * 调度时间：每日00:00
  * 默认保留天数：180天
+ *
+ * 分批删除策略：每批1000条，避免一次性删除大量数据导致锁表
  */
 @Component
 public class LogCleanupTask {
@@ -31,6 +35,9 @@ public class LogCleanupTask {
 
     private static final String COLLECTION_NAME = IntermediateService.PUSH_COLLECTION;
 
+    /** 每批删除的最大条数 */
+    private static final int BATCH_SIZE = 1000;
+
     @Autowired
     private MongoTemplate mongoTemplate;
 
@@ -38,7 +45,7 @@ public class LogCleanupTask {
     private int deleteDay;
 
     /**
-     * 执行清理
+     * 执行清理（分批删除）
      */
     @Scheduled(cron = "0 0 0 * * ?")
     public void execute() {
@@ -50,12 +57,39 @@ public class LogCleanupTask {
             cal.add(Calendar.DAY_OF_MONTH, -deleteDay);
             Date cutoffDate = cal.getTime();
 
-            Query query = new Query(Criteria.where("createdAt").lt(cutoffDate));
-            long count = mongoTemplate.count(query, COLLECTION_NAME);
+            long totalCount = 0;
+            int batchCount;
 
-            if (count > 0) {
-                mongoTemplate.remove(query, COLLECTION_NAME);
-                log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 已清理{}条历史记录", traceId, count);
+            do {
+                Query query = new Query(Criteria.where("createdAt").lt(cutoffDate))
+                        .limit(BATCH_SIZE);
+                List<Document> batch = mongoTemplate.find(query, Document.class, COLLECTION_NAME);
+
+                if (batch.isEmpty()) {
+                    break;
+                }
+
+                // 用 find 出的 _id 做精确删除，避免重复扫描
+                List<Object> ids = new java.util.ArrayList<>();
+                for (Document doc : batch) {
+                    Object id = doc.get("_id");
+                    if (id != null) {
+                        ids.add(id);
+                    }
+                }
+
+                if (!ids.isEmpty()) {
+                    Query deleteQuery = new Query(Criteria.where("_id").in(ids));
+                    mongoTemplate.remove(deleteQuery, COLLECTION_NAME);
+                    batchCount = ids.size();
+                    totalCount += batchCount;
+                } else {
+                    break;
+                }
+            } while (batchCount == BATCH_SIZE);
+
+            if (totalCount > 0) {
+                log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 已分批清理{}条历史记录", traceId, totalCount);
             } else {
                 log.info("STEP_12_PUSH_STATUS_UPDATED traceId={} 无需清理", traceId);
             }

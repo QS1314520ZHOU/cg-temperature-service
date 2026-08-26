@@ -175,9 +175,15 @@ public abstract class BaseVitalSignHandler {
         if (bedsideTime != null && pid != null) {
             Query yishiQuery = new Query(Criteria.where("pid").is(pid)
                     .and("code").is("param_Yishi")
-                    .and("valid").ne(false)
+                    .and("valid").ne(false).ne(0)
                     .and("time").is(bedsideTime));
             Document yishiDoc = mongoTemplate.findOne(yishiQuery, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
             if (yishiDoc != null) {
                 editUser = readEditUserValue(yishiDoc);
                 log.info("STEP_07_NURSE traceId={} 从param_Yishi获取editUser={}", traceId, editUser);

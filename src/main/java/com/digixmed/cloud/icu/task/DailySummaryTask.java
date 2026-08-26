@@ -709,7 +709,7 @@ public class DailySummaryTask {
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-            Query query = new Query(Criteria.where("time").gt(startDate).lte(endDate));
+            Query query = new Query(Criteria.where("time").gte(startDate).lt(endDate));
             query.fields().include("pid");
             List<Document> docs = mongoTemplate.find(query, Document.class, "bedside");
 

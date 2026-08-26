@@ -118,12 +118,18 @@ public class TemperatureHandler extends BaseVitalSignHandler {
 
         Query query = new Query(Criteria.where("pid").is(pid)
                 .and("code").is(LOCATION_CODE)
-                .and("valid").ne(false)
+                .and("valid").ne(false).ne(0)
                 .and("time").gte(startTime).lt(endTime)
         ).with(org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "editTime"))
                 .limit(1);
 
         Document record = mongoTemplate.findOne(query, Document.class, "bedside");
+        if (record != null) {
+            Object valid = record.get("valid");
+            if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                record = null;
+            }
+        }
         if (record != null) {
             String location = getValueFromDocByKey(record, "strVal", String.class);
             log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} 体温部位={}", traceId, location);

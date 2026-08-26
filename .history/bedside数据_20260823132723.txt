@@ -1,0 +1,343 @@
+// 1
+{
+    "_id": ObjectId("6a892242f0d5935391652c28"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T03:45:00.000Z"),
+    "strVal": "鼻导管吸氧",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdbf",
+    "editTime": ISODate("2026-08-22T04:14:58.822Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 2
+{
+    "_id": ObjectId("6a892984f0d5935391652d5f"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T04:00:00.000Z"),
+    "strVal": "鼻导管吸氧",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T04:45:56.5Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 3
+{
+    "_id": ObjectId("6a893d35f0d5935391653072"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T04:40:00.000Z"),
+    "strVal": "鼻导管吸氧",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T06:09:57.563Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 4
+{
+    "_id": ObjectId("6a893d35f0d5935391653073"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T05:00:00.000Z"),
+    "strVal": "鼻导管吸氧",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T06:09:57.566Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 5
+{
+    "_id": ObjectId("6a893d35f0d5935391653074"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T06:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T06:09:57.569Z"),
+            "accountId": "6a1f9f01e467916d244bbdcd",
+            "desc": "鼻导管吸氧"
+        },
+        {
+            "time": ISODate("2026-08-22T06:10:10.055Z"),
+            "accountId": "6a1f9f01e467916d244bbdcd",
+            "desc": ""
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T06:10:15.577Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 6
+{
+    "_id": ObjectId("6a894fa9f0d5935391653249"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T07:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T07:28:41.48Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 7
+{
+    "_id": ObjectId("6a895aadf0d5935391653378"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T08:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcd",
+    "editTime": ISODate("2026-08-22T08:15:41.074Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 8
+{
+    "_id": ObjectId("6a8972aaf0d5935391653591"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T09:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdcb",
+    "editTime": ISODate("2026-08-22T09:58:02.815Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 9
+{
+    "_id": ObjectId("6a898013f0d593539165369f"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T10:00:00.000Z"),
+    "strVal": "高流量湿化氧疗",
+    "valid": true,
+    "history": [
+        {
+            "time": ISODate("2026-08-22T10:55:15.478Z"),
+            "accountId": "6a1f9f01e467916d244bbdc6",
+            "desc": "无创"
+        }
+    ],
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T10:55:35.985Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 10
+{
+    "_id": ObjectId("6a898361f0d5935391653702"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T11:00:00.000Z"),
+    "strVal": "高流量湿化氧疗",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T11:09:21.827Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 11
+{
+    "_id": ObjectId("6a8991b8f0d59353916538a5"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T12:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T12:10:32.01Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 12
+{
+    "_id": ObjectId("6a89a98d37a75f505011826e"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T13:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T13:52:13.49Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 13
+{
+    "_id": ObjectId("6a89b0d237a75f505011840f"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T14:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T14:23:14.889Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 14
+{
+    "_id": ObjectId("6a89bd7c37a75f5050118537"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T15:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T15:17:16.194Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 15
+{
+    "_id": ObjectId("6a89cae637a75f5050118602"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T16:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc6",
+    "editTime": ISODate("2026-08-22T16:14:30.351Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 16
+{
+    "_id": ObjectId("6a89db0237a75f5050118846"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T17:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T17:23:14.512Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 17
+{
+    "_id": ObjectId("6a89f6fc37a75f5050118a5d"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T18:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T19:22:36.643Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 18
+{
+    "_id": ObjectId("6a89f6fc37a75f5050118a5e"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T19:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T19:22:36.645Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 19
+{
+    "_id": ObjectId("6a8a106237a75f5050118cf7"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T20:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T21:10:58.069Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 20
+{
+    "_id": ObjectId("6a8a106237a75f5050118cf8"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T21:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T21:10:58.072Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 21
+{
+    "_id": ObjectId("6a8a20b437a75f5050118edd"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T22:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T22:20:36.28Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 22
+{
+    "_id": ObjectId("6a8a30b537a75f5050118ff9"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-22T23:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-22T23:28:53.584Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 23
+{
+    "_id": ObjectId("6a8a3b6537a75f505011909b"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-23T00:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc4",
+    "editTime": ISODate("2026-08-23T00:14:29.117Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 24
+{
+    "_id": ObjectId("6a8a5bfd37a75f505011946d"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-23T01:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc8",
+    "editTime": ISODate("2026-08-23T02:33:33.37Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}
+
+// 25
+{
+    "_id": ObjectId("6a8a5bff37a75f505011946e"),
+    "pid": "6a89145667ecaf4081d22f47",
+    "code": "param_XiYangTuJing",
+    "time": ISODate("2026-08-23T02:00:00.000Z"),
+    "strVal": "无创",
+    "valid": true,
+    "editUser": "6a1f9f01e467916d244bbdc8",
+    "editTime": ISODate("2026-08-23T02:33:35.554Z"),
+    "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+}

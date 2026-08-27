@@ -33,8 +33,13 @@ public class PushTask {
 
     private static final Logger log = LoggerFactory.getLogger(PushTask.class);
 
-    /** 单线程调度下不要设太大：批量 * 读超时 = 最坏阻塞时长 */
-    private static final int MAX_BATCH_PER_ROUND = 10;
+    /** 每批拉取条数（可配置） */
+    @Value("${vitalsign.push.batch-size:50}")
+    private int batchSize;
+
+    /** 单次 pushOnce 最大处理条数（安全上限，防止无限循环） */
+    @Value("${vitalsign.push.max-records-per-run:200}")
+    private int maxRecordsPerRun;
 
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -66,37 +71,66 @@ public class PushTask {
         pushOnce(TraceIdGenerator.generate());
     }
 
-    /** 单轮推送，供定时与手动共用 */
+    /** 单轮推送，供定时与手动共用。支持分批处理，直到没有待推记录或达到安全上限 */
     public void pushOnce(String traceId) {
-        log.info("PUSH_STARTED traceId={} 开始推送任务", traceId);
+        log.info("PUSH_STARTED traceId={} batchSize={} maxRecordsPerRun={}",
+                traceId, batchSize, maxRecordsPerRun);
 
-        int handled = 0, success = 0, failed = 0, skipped = 0;
+        int totalHandled = 0, totalSuccess = 0, totalFailed = 0, totalSkipped = 0;
+        int rounds = 0;
 
         try {
-            List<Document> pending = intermediateService.fetchPending(MAX_BATCH_PER_ROUND);
-            log.info("PUSH_FETCHED traceId={} 待推送条数={}", traceId, pending.size());
-
-            for (Document record : pending) {
-                String key = record.getString("idempotencyKey");
-                handled++;
-                try {
-                    switch (pushOne(record, key, traceId)) {
-                        case SUCCESS: success++; break;
-                        case SKIPPED: skipped++; break;
-                        default:      failed++;  break;
-                    }
-                } catch (Exception e) {
-                    log.error("PUSH_ERROR traceId={} key={} 异常", traceId, key, e);
-                    intermediateService.markFailed(key, "PUSH_EXCEPTION", brief(e.getMessage()));
-                    failed++;
+            while (totalHandled < maxRecordsPerRun) {
+                rounds++;
+                List<Document> pending = intermediateService.fetchPending(batchSize);
+                if (pending.isEmpty()) {
+                    log.info("PUSH_ROUND traceId={} round={} 无待推记录，结束", traceId, rounds);
+                    break;
                 }
+
+                log.info("PUSH_ROUND traceId={} round={} 本批条数={}", traceId, rounds, pending.size());
+
+                int roundHandled = 0, roundSuccess = 0, roundFailed = 0, roundSkipped = 0;
+                for (Document record : pending) {
+                    String key = record.getString("idempotencyKey");
+                    roundHandled++;
+                    try {
+                        switch (pushOne(record, key, traceId)) {
+                            case SUCCESS: roundSuccess++; break;
+                            case SKIPPED: roundSkipped++; break;
+                            default:      roundFailed++;  break;
+                        }
+                    } catch (Exception e) {
+                        log.error("PUSH_ERROR traceId={} key={} 异常", traceId, key, e);
+                        intermediateService.markFailed(key, "PUSH_EXCEPTION", brief(e.getMessage()));
+                        roundFailed++;
+                    }
+                }
+
+                totalHandled += roundHandled;
+                totalSuccess += roundSuccess;
+                totalFailed += roundFailed;
+                totalSkipped += roundSkipped;
+
+                log.info("PUSH_ROUND_DONE traceId={} round={} roundHandled={} roundSuccess={} roundFailed={} roundSkipped={} totalHandled={}",
+                        traceId, rounds, roundHandled, roundSuccess, roundFailed, roundSkipped, totalHandled);
+
+                // 如果本批不足 batchSize，说明已无更多待推记录
+                if (pending.size() < batchSize) {
+                    break;
+                }
+            }
+
+            if (totalHandled >= maxRecordsPerRun) {
+                log.warn("PUSH_LIMIT_REACHED traceId={} 已达最大处理条数maxRecordsPerRun={}，剩余待推记录将在下轮处理",
+                        traceId, maxRecordsPerRun);
             }
         } catch (Exception e) {
             log.error("PUSH_ERROR traceId={} 推送任务异常", traceId, e);
         }
 
-        log.info("PUSH_DONE traceId={} handled={} success={} failed={} skipped={}",
-                traceId, handled, success, failed, skipped);
+        log.info("PUSH_DONE traceId={} totalHandled={} totalSuccess={} totalFailed={} totalSkipped={} rounds={}",
+                traceId, totalHandled, totalSuccess, totalFailed, totalSkipped, rounds);
     }
 
     /** 单条推送，返回最终结果 */

@@ -36,6 +36,10 @@ vitalsign:
     max-retry-count: 3
     max-request-body-length: 4000
     max-response-body-length: 2000
+    # 每批拉取条数（默认50）
+    batch-size: ${VITALSIGN_PUSH_BATCH_SIZE:50}
+    # 单次pushOnce最大处理条数（安全上限，防止无限循环，默认200）
+    max-records-per-run: ${VITALSIGN_PUSH_MAX_RECORDS_PER_RUN:200}
   # 普通体征扫描配置
   scan:
     # 回看窗口（小时）：生成需要扫描的标准时间点，覆盖护士事后补录场景

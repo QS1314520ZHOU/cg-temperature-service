@@ -109,9 +109,23 @@ public class ManualPushController {
         try {
             int enqueued;
             if (hour == SUMMARY_HOUR) {
-                log.info("MANUAL traceId={} mrn={} date={} 走出入量汇总链路", traceId, mrn, reportDate);
-                enqueued = dailySummaryTask.summarizeOnePatient(pid, reportDate, traceId);
+                // 归档点日期 vs 内部窗口日期：
+                // 用户传 date=2026-08-27&hour=7 表示归档点 2026-08-27 07:00
+                // 内部窗口：[2026-08-26 07:00, 2026-08-27 07:00)，reportDate = 2026-08-26
+                LocalDate closingDate = reportDate;
+                LocalDate internalReportDate = closingDate.minusDays(1);
+                log.info("MANUAL traceId={} mrn={} closingDate={} internalReportDate={} 走出入量汇总链路",
+                        traceId, mrn, closingDate, internalReportDate);
+                enqueued = dailySummaryTask.summarizeOnePatient(pid, internalReportDate, traceId);
                 result.put("branch", "SUMMARY(出入量/大便次数/血压/身高体重)");
+
+                // 返回便于排查的时间信息
+                com.digixmed.cloud.icu.model.ClinicalTimeWindow window =
+                        timeWindowService.buildDailyWindow(internalReportDate);
+                result.put("requestedClosingPoint", closingDate + " 07:00");
+                result.put("internalReportDate", internalReportDate.toString());
+                result.put("windowStart", window.getStart().toString());
+                result.put("windowEnd", window.getEnd().toString());
             } else {
                 LocalDateTime point = timeWindowService.buildVitalPoint(reportDate, hour);
                 log.info("MANUAL traceId={} mrn={} point={} 走生命体征链路", traceId, mrn, point);
@@ -386,10 +400,14 @@ public class ManualPushController {
                 }
 
                 // 2.4 出入量汇总（回看N天+今天）
+                // summarizeOnePatient 的 reportDate 始终是 window.start 所在日期
+                // 对于今天的汇总：reportDate = today - 1（窗口 [yesterday 07:00, today 07:00)）
+                // 对于历史日期：reportDate = date（窗口 [date 07:00, date+1 07:00)）
                 for (int d = lookbackDays; d >= 0; d--) {
                     LocalDate date = timeWindowService.today().minusDays(d);
                     try {
-                        patientEnqueued += dailySummaryTask.summarizeOnePatient(pid, date, traceId);
+                        LocalDate summaryReportDate = date.minusDays(1);
+                        patientEnqueued += dailySummaryTask.summarizeOnePatient(pid, summaryReportDate, traceId);
                     } catch (Exception e) {
                         log.error("SCAN_WARD traceId={} pid={} 出入量汇总异常 date={}", traceId, pid, date, e);
                     }

@@ -386,6 +386,7 @@ public class DailySummaryTask {
      *   - 查询时间：window.end（次日07:00）
      *   - planTime：window.end
      *   - 幂等键：使用 window.end 作为 planTime
+     *   - 无论是否有记录，都必须生成 1007 payload（无记录时值为 "0"）
      */
     private void processStoolCount(List<Document> records, Document patient, String pid,
                                     ClinicalTimeWindow window, String traceId) {
@@ -408,18 +409,58 @@ public class DailySummaryTask {
                 .limit(1);
         Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
 
-        if (stoolRecord == null) {
-            log.info("STOOL_NOT_FOUND traceId={} pid={} point={} code=param_汇总大便次数",
+        String stoolValue = "0";
+        Date recordTime = pointDate;
+        Object bedsideId = null;
+
+        if (stoolRecord != null) {
+            bedsideId = stoolRecord.get("_id");
+            Object strVal = stoolRecord.get("strVal");
+            log.info("STOOL_FOUND traceId={} pid={} point={} bedsideId={} strVal={}",
+                    traceId, pid, point, bedsideId, strVal);
+
+            // 优先使用 strVal，strVal 为空时尝试 fVal
+            if (strVal != null && !strVal.toString().trim().isEmpty()) {
+                stoolValue = strVal.toString().trim();
+            } else {
+                Object fValObj = stoolRecord.get("fVal");
+                if (fValObj instanceof Number) {
+                    stoolValue = new BigDecimal(((Number) fValObj).toString())
+                            .stripTrailingZeros().toPlainString();
+                    log.info("STOOL_USE_FVAL traceId={} pid={} fVal={} stoolValue={}",
+                            traceId, pid, fValObj, stoolValue);
+                } else {
+                    log.info("STOOL_EMPTY_VAL traceId={} pid={} strVal={} fVal={} 使用默认值0",
+                            traceId, pid, strVal, fValObj);
+                }
+            }
+
+            // 有记录时使用记录时间
+            Object editTimeObj = stoolRecord.get("editTime");
+            if (editTimeObj instanceof Date) {
+                recordTime = (Date) editTimeObj;
+            } else {
+                Object timeObj = stoolRecord.get("time");
+                if (timeObj instanceof Date) {
+                    recordTime = (Date) timeObj;
+                }
+            }
+        } else {
+            log.info("STOOL_NOT_FOUND traceId={} pid={} point={} code=param_汇总大便次数 使用默认值0",
                     traceId, pid, point);
-            return;
         }
 
-        Object bedsideId = stoolRecord.get("_id");
-        Object strVal = stoolRecord.get("strVal");
-        log.info("STOOL_FOUND traceId={} pid={} point={} bedsideId={} strVal={}",
-                traceId, pid, point, bedsideId, strVal);
+        // 构造虚拟 Document，确保 handler 能处理
+        Document vDoc = new Document();
+        vDoc.append("strVal", stoolValue);
+        vDoc.append("code", "param_汇总大便次数");
+        vDoc.append("time", pointDate);
+        vDoc.append("valid", true);
+        if (bedsideId != null) {
+            vDoc.append("_id", bedsideId);
+        }
 
-        VitalSignPayload payload = stoolCountHandler.handle(stoolRecord, patient, point, traceId);
+        VitalSignPayload payload = stoolCountHandler.handle(vDoc, patient, point, traceId);
         if (payload == null) {
             log.warn("STOOL_PAYLOAD_NULL traceId={} pid={} point={} bedsideId={}",
                     traceId, pid, point, bedsideId);
@@ -428,9 +469,12 @@ public class DailySummaryTask {
 
         PayloadTimeNormalizer.anchor(payload, point);
         Map<String, Object> result = intermediateService.upsertPending(payload, traceId);
-        enqueueCounter.incrementAndGet();
-        log.info("STOOL_ENQUEUED traceId={} pid={} point={} bedsideId={} result={}",
-                traceId, pid, point, bedsideId, result);
+        String action = result != null ? String.valueOf(result.get("action")) : "UNKNOWN";
+        if (!"SKIP".equals(action)) {
+            enqueueCounter.incrementAndGet();
+        }
+        log.info("STOOL_ENQUEUED traceId={} pid={} point={} bedsideId={} value={} action={} result={}",
+                traceId, pid, point, bedsideId, stoolValue, action, result);
     }
 
     /**
@@ -455,6 +499,7 @@ public class DailySummaryTask {
 
     /**
      * 调用 handler 构建 payload 并写入队列，入科第一天设置 vitalsignSVal1 = 小时数
+     * 入队计数只统计实际入队的情况（INSERT, CONTENT_CHANGED, RETRY），跳过 SKIP
      */
     private void enqueueWithHours(BaseVitalSignHandler handler, Document doc, Document patient,
                                   ClinicalTimeWindow window, String traceId, int admissionHoursToSeven) {
@@ -470,8 +515,19 @@ public class DailySummaryTask {
         if (admissionHoursToSeven > 0) {
             payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
         }
-        intermediateService.upsertPending(payload, traceId);
-        enqueueCounter.incrementAndGet();
+        Map<String, Object> result = intermediateService.upsertPending(payload, traceId);
+        String action = result != null ? String.valueOf(result.get("action")) : "UNKNOWN";
+        if (!"SKIP".equals(action)) {
+            enqueueCounter.incrementAndGet();
+        }
+        log.info("ENQUEUE_DONE traceId={} handler={} code={} pid={} planTime={} value={} action={} status={}",
+                traceId, handler.getClass().getSimpleName(),
+                payload.getVitalsignType(),
+                getValueFromDocByKey(patient, "_id", String.class),
+                payload.getPlanTime(),
+                payload.getVitalsignNVal1() != null ? payload.getVitalsignNVal1() : payload.getVitalsignSVal2(),
+                action,
+                result != null ? result.get("status") : "UNKNOWN");
     }
 
     /**
@@ -503,28 +559,47 @@ public class DailySummaryTask {
     }
 
     /**
+     * 从 Document 中解析金额/数量值，优先 strVal，其次 fVal，都不合法则返回 ZERO
+     *
+     * 优先级：
+     *   1. strVal 非空且可解析为 BigDecimal → 返回该值
+     *   2. fVal 非空且为 Number → 转 BigDecimal 返回
+     *   3. 都不可用 → 返回 BigDecimal.ZERO
+     */
+    private BigDecimal parseAmountOrZero(Document doc, String traceId) {
+        String strVal = getValueFromDocByKey(doc, "strVal", String.class);
+        if (strVal != null && !strVal.trim().isEmpty()) {
+            try {
+                return new BigDecimal(strVal.trim());
+            } catch (NumberFormatException e) {
+                log.warn("PARSE_AMOUNT traceId={} strVal={} 无法解析为数字", traceId, strVal);
+            }
+        }
+        Object fValObj = doc.get("fVal");
+        if (fValObj instanceof Number) {
+            try {
+                return new BigDecimal(((Number) fValObj).toString());
+            } catch (NumberFormatException e) {
+                log.warn("PARSE_AMOUNT traceId={} fVal={} 无法解析为数字", traceId, fValObj);
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+
+    /**
      * 处理小便量
+     * 无记录时回传 0
      */
     private void processUrineOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId, int hours) {
-        // 只处理有 param_niaoLiang 记录的患者（用户填写了才回传）
         List<Document> matched = records.stream()
                 .filter(doc -> "param_niaoLiang".equals(getValueFromDocByKey(doc, "code", String.class)))
                 .collect(Collectors.toList());
-        if (matched.isEmpty()) {
-            return;
+
+        BigDecimal total = BigDecimal.ZERO;
+        for (Document doc : matched) {
+            total = total.add(parseAmountOrZero(doc, traceId));
         }
-        BigDecimal total = matched.stream()
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        log.warn("STEP_05_VALUE_PARSED traceId={} 无法解析尿量值: {}", traceId, val);
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_niaoLiang", window);
         enqueueWithHours(urineOutputHandler, vDoc, patient, window, traceId, hours);
@@ -539,6 +614,8 @@ public class DailySummaryTask {
      * 总入量(1009) = 药物治疗 + 胃肠摄入（新口径，对齐护理记录单）
      *   药物治疗 = 带入药量(bedside) + 静脉入量(drugExe: 输血 + 各静脉途径)
      *   胃肠摄入 = 鼻饲量(bedside手工 + drugExe肠内营养泵入) + 胃肠入量(bedside口服 + drugExe po等)
+     *
+     * 无来源记录或最终结果为0时，回传0
      */
     private void processIntakeAndOutput(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId, int hours) {
@@ -546,34 +623,21 @@ public class DailySummaryTask {
         List<String> oralCodes = OralIntakeHandler.getOralIntakeCodes();
         List<String> therapyCodes = TherapyInputHandler.getTherapyInputCodes();
 
-        // 饮入量 1044（有记录才回传）
-        if (hasAnyRecord(records, oralCodes)) {
-            BigDecimal oralTotal = sumByCodes(records, oralCodes);
-            Document vDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_biSi", window);
-            enqueueWithHours(oralIntakeHandler, vDoc, patient, window, traceId, hours);
-        }
+        // 饮入量 1044（无记录时回传0）
+        BigDecimal oralTotal = sumByCodes(records, oralCodes);
+        Document oralDoc = virtualDoc(oralTotal.stripTrailingZeros().toPlainString(), "param_biSi", window);
+        enqueueWithHours(oralIntakeHandler, oralDoc, patient, window, traceId, hours);
 
-        // 输入量 1045（有记录才回传）
-        if (hasAnyRecord(records, therapyCodes)) {
-            BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
-            Document vDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
-            enqueueWithHours(therapyInputHandler, vDoc, patient, window, traceId, hours);
-        }
+        // 输入量 1045（无记录时回传0）
+        BigDecimal therapyTotal = sumByCodes(records, therapyCodes);
+        Document therapyDoc = virtualDoc(therapyTotal.stripTrailingZeros().toPlainString(), "param_YaoYeti_in_hour", window);
+        enqueueWithHours(therapyInputHandler, therapyDoc, patient, window, traceId, hours);
 
-        // 总入量 1009（新口径：对齐护理记录单）
+        // 总入量 1009（无记录时回传0）
         Date startDate = Date.from(window.getStart().atZone(ZONE).toInstant());
         Date endDate = Date.from(window.getEnd().atZone(ZONE).toInstant());
 
-        // 检查是否有任何入量相关记录（bedside 或 drugExecution）
-        List<String> allInputCodes = new java.util.ArrayList<>();
-        allInputCodes.addAll(OralIntakeHandler.getOralIntakeCodes());
-        allInputCodes.addAll(TherapyInputHandler.getTherapyInputCodes());
-        boolean hasInputRecords = hasAnyRecord(records, allInputCodes);
         List<Document> drugExecutions = drugAmountCalculator.queryDrugExe(pid, startDate, endDate);
-        if (!hasInputRecords && drugExecutions.isEmpty()) {
-            return;
-        }
-
         List<Document> drugMethods = drugAmountCalculator.queryDrugMethods();
         DrugAmountCalculator.DrugChannelTotals drugChannelTotals =
                 drugAmountCalculator.sumDrugAmountsByChannel(
@@ -583,8 +647,8 @@ public class DailySummaryTask {
         BigDecimal totalInput = intakeOutputCalculator.sumTotalInput(
                 records, drugChannelTotals, traceId, pid);
 
-        Document vDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
-        enqueueWithHours(totalInputHandler, vDoc, patient, window, traceId, hours);
+        Document inputDoc = virtualDoc(totalInput.stripTrailingZeros().toPlainString(), "param_zongRuliang", window);
+        enqueueWithHours(totalInputHandler, inputDoc, patient, window, traceId, hours);
     }
 
     /**
@@ -592,23 +656,10 @@ public class DailySummaryTask {
      * 总出量(1010) = 尿量 + 净超滤量 + 排出物 + 引流液
      *   排出物：param_daBianAmount, param_造瘘口量, param_outuwuliang, param_咯血, param_tanLiang
      *   引流液：code含"引流" OR code==="param_tube_胃肠减压"
+     * 无来源记录时结果为0并回传
      */
     private void processTotalOutput(List<Document> records, Document patient, String pid,
                                      ClinicalTimeWindow window, String traceId, int hours) {
-        // 总出量组成：尿量、净超滤量、排出物、引流液
-        List<String> allOutputCodes = new java.util.ArrayList<>();
-        allOutputCodes.add("param_niaoLiang");
-        allOutputCodes.add("param_chaoLvLiang");
-        allOutputCodes.addAll(DrainageOutputHandler.getDrainageCodes());
-        // 加上 _tube_ 通配
-        boolean hasOutputRecords = records.stream().anyMatch(doc -> {
-            String code = getValueFromDocByKey(doc, "code", String.class);
-            return code != null && (allOutputCodes.contains(code) || code.contains("_tube_"));
-        });
-        if (!hasOutputRecords) {
-            return;
-        }
-
         BigDecimal total = intakeOutputCalculator.sumTotalOutput(records, traceId, pid);
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_zongChuLiang", window);
         enqueueWithHours(totalOutputHandler, vDoc, patient, window, traceId, hours);
@@ -616,27 +667,18 @@ public class DailySummaryTask {
 
     /**
      * 处理排出物量
+     * 无记录时回传 0
      */
     private void processDrainageOutput(List<Document> records, Document patient, String pid,
                                         ClinicalTimeWindow window, String traceId, int hours) {
         List<String> drainageCodes = DrainageOutputHandler.getDrainageCodes();
-        if (!hasAnyRecord(records, drainageCodes)) {
-            return;
+        BigDecimal total = BigDecimal.ZERO;
+        for (Document doc : records) {
+            String code = getValueFromDocByKey(doc, "code", String.class);
+            if (code != null && drainageCodes.contains(code)) {
+                total = total.add(parseAmountOrZero(doc, traceId));
+            }
         }
-        BigDecimal total = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && drainageCodes.contains(code);
-                })
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
         enqueueWithHours(drainageOutputHandler, vDoc, patient, window, traceId, hours);
@@ -644,25 +686,16 @@ public class DailySummaryTask {
 
     /**
      * 处理胃管负压引流
+     * 无记录时回传 0
      */
     private void processGastricDrainage(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId, int hours) {
-        boolean hasRecords = records.stream()
-                .anyMatch(doc -> "param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class)));
-        if (!hasRecords) {
-            return;
+        BigDecimal total = BigDecimal.ZERO;
+        for (Document doc : records) {
+            if ("param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class))) {
+                total = total.add(parseAmountOrZero(doc, traceId));
+            }
         }
-        BigDecimal total = records.stream()
-                .filter(doc -> "param_tube_胃肠减压".equals(getValueFromDocByKey(doc, "code", String.class)))
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
         enqueueWithHours(gastricDrainageHandler, vDoc, patient, window, traceId, hours);
@@ -670,30 +703,17 @@ public class DailySummaryTask {
 
     /**
      * 处理其他引流量
+     * 无记录时回传 0
      */
     private void processOtherDrainage(List<Document> records, Document patient, String pid,
                                        ClinicalTimeWindow window, String traceId, int hours) {
-        boolean hasRecords = records.stream().anyMatch(doc -> {
+        BigDecimal total = BigDecimal.ZERO;
+        for (Document doc : records) {
             String code = getValueFromDocByKey(doc, "code", String.class);
-            return code != null && code.contains("_tube_") && !"param_tube_胃肠减压".equals(code);
-        });
-        if (!hasRecords) {
-            return;
+            if (code != null && code.contains("_tube_") && !"param_tube_胃肠减压".equals(code)) {
+                total = total.add(parseAmountOrZero(doc, traceId));
+            }
         }
-        BigDecimal total = records.stream()
-                .filter(doc -> {
-                    String code = getValueFromDocByKey(doc, "code", String.class);
-                    return code != null && code.contains("_tube_") && !"param_tube_胃肠减压".equals(code);
-                })
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
         enqueueWithHours(otherDrainageHandler, vDoc, patient, window, traceId, hours);
@@ -701,50 +721,74 @@ public class DailySummaryTask {
 
     /**
      * 处理净超滤量
+     * 无记录时回传 0
      */
     private void processNetUltrafiltration(List<Document> records, Document patient, String pid,
                                             ClinicalTimeWindow window, String traceId, int hours) {
-        boolean hasRecords = records.stream()
-                .anyMatch(doc -> "param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class)));
-        if (!hasRecords) {
-            return;
+        BigDecimal total = BigDecimal.ZERO;
+        for (Document doc : records) {
+            if ("param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class))) {
+                total = total.add(parseAmountOrZero(doc, traceId));
+            }
         }
-        BigDecimal total = records.stream()
-                .filter(doc -> "param_chaoLvLiang".equals(getValueFromDocByKey(doc, "code", String.class)))
-                .map(doc -> {
-                    String val = getValueFromDocByKey(doc, "strVal", String.class);
-                    try {
-                        return val != null ? new BigDecimal(val.trim()) : BigDecimal.ZERO;
-                    } catch (NumberFormatException e) {
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
         enqueueWithHours(netUltrafiltrationHandler, vDoc, patient, window, traceId, hours);
     }
 
     /**
-     * 本轮候选患者：统计窗口内有 bedside 数据的 pid（去重）。
+     * 本轮候选患者：统计窗口内有 bedside 数据的 pid + 归档点有大便次数记录的 pid（去重）。
      * 不依赖金仓在科列表，是否回传只看 patient 集合中是否存在该 _id。
+     *
+     * 两个集合的并集：
+     *   A. 统计窗口内 bedside 记录：time >= window.start AND time < window.end
+     *   B. 归档点的大便次数记录：code = param_汇总大便次数 AND time = window.end AND valid != false AND valid != 0
      */
     private List<String> findCandidatePids(ClinicalTimeWindow window, String traceId) {
         try {
             Date startDate = Date.from(window.getStart().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
 
-            Query query = new Query(Criteria.where("time").gte(startDate).lt(endDate));
-            query.fields().include("pid");
-            List<Document> docs = mongoTemplate.find(query, Document.class, "bedside");
+            // A. 统计窗口内 bedside 记录
+            Query queryA = new Query(Criteria.where("time").gte(startDate).lt(endDate));
+            queryA.fields().include("pid");
+            List<Document> docsA = mongoTemplate.find(queryA, Document.class, "bedside");
 
-            List<String> pids = docs.stream()
-                    .map(doc -> getValueFromDocByKey(doc, "pid", String.class))
-                    .filter(one -> one != null && !one.isEmpty())
-                    .distinct()
-                    .collect(Collectors.toList());
+            Set<String> pidSet = new LinkedHashSet<>();
+            for (Document doc : docsA) {
+                String pid = getValueFromDocByKey(doc, "pid", String.class);
+                if (pid != null && !pid.isEmpty()) {
+                    pidSet.add(pid);
+                }
+            }
 
-            log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) bedside命中pid数量={}",
+            log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) A集合bedside命中pid数量={}",
+                    traceId, window.getStart(), window.getEnd(), pidSet.size());
+
+            // B. 归档点的大便次数记录（time = window.end）
+            try {
+                Criteria stoolCriteria = Criteria.where("code").is("param_汇总大便次数")
+                        .and("time").is(endDate)
+                        .and("valid").ne(false);
+                Query queryB = new Query(stoolCriteria);
+                queryB.fields().include("pid");
+                List<Document> docsB = mongoTemplate.find(queryB, Document.class, "bedside");
+
+                int bBefore = pidSet.size();
+                for (Document doc : docsB) {
+                    String pid = getValueFromDocByKey(doc, "pid", String.class);
+                    if (pid != null && !pid.isEmpty()) {
+                        pidSet.add(pid);
+                    }
+                }
+                log.info("STEP_01_PATIENT_SELECTED traceId={} B集合大便次数命中pid数量={} 新增={}",
+                        traceId, docsB.size(), pidSet.size() - bBefore);
+            } catch (Exception e) {
+                log.warn("STEP_01_PATIENT_SELECTED traceId={} B集合大便次数查询异常: {}", traceId, e.getMessage());
+            }
+
+            List<String> pids = new ArrayList<>(pidSet);
+            log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) 合并后候选pid数量={}",
                     traceId, window.getStart(), window.getEnd(), pids.size());
             return pids;
         } catch (Exception e) {

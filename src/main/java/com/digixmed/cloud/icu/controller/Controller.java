@@ -474,7 +474,7 @@ public class Controller {
 
             String pid = patient.get("_id").toString();
 
-            // 2.2 扫描指定时间点
+            // 2.2 扫描指定时间点（普通体征）
             for (int hour : targetHours) {
                 LocalDateTime planTime = LocalDateTime.of(targetDate, LocalTime.of(hour, 0, 0));
                 ClinicalTimeWindow window = timeWindowService.buildVitalPointWindow(targetDate, hour);
@@ -488,6 +488,15 @@ public class Controller {
                 totalSkipped += (int) pointResult.getOrDefault("skipped", 0);
                 totalFailed += (int) pointResult.getOrDefault("failed", 0);
             }
+
+            // 2.3 出入量汇总（使用前一天的窗口）
+            ClinicalTimeWindow dailyWindow = timeWindowService.buildDailyWindow(targetDate.minusDays(1));
+            log.info("SCAN_AND_PUSH traceId={} pid={} 出入量汇总: window=[{}, {})",
+                    traceId, pid, dailyWindow.getStart(), dailyWindow.getEnd());
+            Map<String, Object> summaryResult = processDailySummary(pid, patient, dailyWindow, traceId);
+            totalInserted += (int) summaryResult.getOrDefault("inserted", 0);
+            totalSkipped += (int) summaryResult.getOrDefault("skipped", 0);
+            totalFailed += (int) summaryResult.getOrDefault("failed", 0);
         }
 
         result.put("totalPatients", inpatients.size());
@@ -822,6 +831,31 @@ public class Controller {
         Date endDate = Date.from(window.getEnd().atZone(ZoneId.of("Asia/Shanghai")).toInstant());
         LocalDateTime planTimeDate = window.getEnd();
 
+        // 入科第一天：计算入科时间到第二天07:00的小时数（取 patient.icuAdmissionTime）
+        int admissionHoursToSeven = 0;
+        Date icuAdmissionDate = patient.get("icuAdmissionTime") instanceof Date
+                ? (Date) patient.get("icuAdmissionTime") : null;
+        if (icuAdmissionDate != null) {
+            LocalDateTime admissionTime = icuAdmissionDate.toInstant()
+                    .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+            LocalDate admissionDate = admissionTime.toLocalDate();
+            LocalDate reportDate = window.getStart().toLocalDate();
+            if (reportDate.equals(admissionDate)) {
+                long minutes = java.time.Duration.between(admissionTime, window.getEnd()).toMinutes();
+                // 1小时29分算1小时、1小时30分算2小时（满30分钟进1小时）
+                admissionHoursToSeven = (int) ((minutes + 30) / 60);
+                log.info("MANUAL_SCAN_ADMISSION_HOURS traceId={} pid={} icuAdmissionTime={} hoursToSeven={}",
+                        traceId, pid, admissionTime, admissionHoursToSeven);
+                // 入科当天：bedside查询起点取 max(window.start, admissionTime)
+                Date admissionDateInstant = Date.from(admissionTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+                if (admissionDateInstant.after(startDate)) {
+                    startDate = admissionDateInstant;
+                    log.info("MANUAL_SCAN_ADMISSION_START_ADJUSTED traceId={} pid={} startDate调整为入科时间={}",
+                            traceId, pid, admissionTime);
+                }
+            }
+        }
+
         // 查询窗口内出入量相关bedside记录（左闭右开：time >= start AND time < end）
         List<String> intakeOutputCodes = Arrays.asList(
                 "param_kouFu", "param_biSi", "param_YaoStomach_in_hour",
@@ -892,6 +926,9 @@ public class Controller {
                         .append("code", "param_niaoLiang");
                 VitalSignPayload payload = urineOutputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -934,6 +971,9 @@ public class Controller {
                         .append("code", "param_kouFu");
                 VitalSignPayload payload = oralIntakeHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -976,6 +1016,9 @@ public class Controller {
                         .append("code", "param_YaoYeti_in_hour");
                 VitalSignPayload payload = therapyInputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1032,6 +1075,9 @@ public class Controller {
                 VitalSignPayload payload = totalInputHandler.buildPayload(
                         totalInput.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1072,6 +1118,9 @@ public class Controller {
                 VitalSignPayload payload = totalOutputHandler.buildPayload(
                         total.doubleValue(), patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1092,6 +1141,9 @@ public class Controller {
                         .append("code", "param_daBianAmount");
                 VitalSignPayload payload = drainageOutputHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1111,6 +1163,9 @@ public class Controller {
                         .append("code", "param_tube_胃肠减压");
                 VitalSignPayload payload = gastricDrainageHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1136,6 +1191,9 @@ public class Controller {
                         .append("code", "param_tube_other");
                 VitalSignPayload payload = otherDrainageHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;
@@ -1155,6 +1213,9 @@ public class Controller {
                         .append("code", "param_chaoLvLiang");
                 VitalSignPayload payload = netUltrafiltrationHandler.handle(doc, patient, planTimeDate, traceId);
                 if (payload != null) {
+                    if (admissionHoursToSeven > 0) {
+                        payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
+                    }
                     String action = (String) intermediateService.upsertPending(payload, traceId).get("action");
                     if ("INSERT".equals(action)) inserted++;
                     else if ("SKIP".equals(action)) skipped++;

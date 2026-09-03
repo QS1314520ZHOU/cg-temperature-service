@@ -314,6 +314,13 @@ public class DailySummaryTask {
                     admissionHoursToSeven = (int) ((minutes + 30) / 60);
                     log.info("ADMISSION_HOURS traceId={} pid={} icuAdmissionTime={} hoursToSeven={}",
                             patientTraceId, pid, admissionTime, admissionHoursToSeven);
+                    // 入科当天：bedside查询起点取 max(window.start, admissionTime)
+                    Date admissionDateInstant = Date.from(admissionTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+                    if (admissionDateInstant.after(startDate)) {
+                        startDate = admissionDateInstant;
+                        log.info("ADMISSION_START_ADJUSTED traceId={} pid={} startDate调整为入科时间={}",
+                                patientTraceId, pid, admissionTime);
+                    }
                 }
             }
 
@@ -667,7 +674,7 @@ public class DailySummaryTask {
 
     /**
      * 处理排出物量
-     * 无记录时回传 0
+     * 无记录时不回传
      */
     private void processDrainageOutput(List<Document> records, Document patient, String pid,
                                         ClinicalTimeWindow window, String traceId, int hours) {
@@ -680,13 +687,17 @@ public class DailySummaryTask {
             }
         }
 
+        if (total.compareTo(BigDecimal.ZERO) == 0) {
+            log.info("DRAINAGE_OUTPUT_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+            return;
+        }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_daBianAmount", window);
         enqueueWithHours(drainageOutputHandler, vDoc, patient, window, traceId, hours);
     }
 
     /**
      * 处理胃管负压引流
-     * 无记录时回传 0
+     * 无记录时不回传
      */
     private void processGastricDrainage(List<Document> records, Document patient, String pid,
                                          ClinicalTimeWindow window, String traceId, int hours) {
@@ -697,13 +708,17 @@ public class DailySummaryTask {
             }
         }
 
+        if (total.compareTo(BigDecimal.ZERO) == 0) {
+            log.info("GASTRIC_DRAINAGE_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+            return;
+        }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_胃肠减压", window);
         enqueueWithHours(gastricDrainageHandler, vDoc, patient, window, traceId, hours);
     }
 
     /**
      * 处理其他引流量
-     * 无记录时回传 0
+     * 无记录时不回传
      */
     private void processOtherDrainage(List<Document> records, Document patient, String pid,
                                        ClinicalTimeWindow window, String traceId, int hours) {
@@ -715,13 +730,17 @@ public class DailySummaryTask {
             }
         }
 
+        if (total.compareTo(BigDecimal.ZERO) == 0) {
+            log.info("OTHER_DRAINAGE_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+            return;
+        }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_tube_other", window);
         enqueueWithHours(otherDrainageHandler, vDoc, patient, window, traceId, hours);
     }
 
     /**
      * 处理净超滤量
-     * 无记录时回传 0
+     * 无记录时不回传
      */
     private void processNetUltrafiltration(List<Document> records, Document patient, String pid,
                                             ClinicalTimeWindow window, String traceId, int hours) {
@@ -732,6 +751,10 @@ public class DailySummaryTask {
             }
         }
 
+        if (total.compareTo(BigDecimal.ZERO) == 0) {
+            log.info("NET_ULTRAFILTRATION_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+            return;
+        }
         Document vDoc = virtualDoc(total.stripTrailingZeros().toPlainString(), "param_chaoLvLiang", window);
         enqueueWithHours(netUltrafiltrationHandler, vDoc, patient, window, traceId, hours);
     }
@@ -790,6 +813,66 @@ public class DailySummaryTask {
             List<String> pids = new ArrayList<>(pidSet);
             log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) 合并后候选pid数量={}",
                     traceId, window.getStart(), window.getEnd(), pids.size());
+
+            // 过滤掉入科时间在窗口开始之后的患者（入科当天07:00之前入科的患者不应回传0值汇总）
+            // 过滤掉出科时间在窗口开始之前的患者（出科后不再回传）
+            if (!pids.isEmpty()) {
+                Map<String, Document> patientMap = findMongoPatientsByPids(pids);
+
+                // 批量查询 KingBase 获取出科时间
+                Set<String> mrnSet = new LinkedHashSet<>();
+                for (String pid : pids) {
+                    Document patient = patientMap.get(pid);
+                    if (patient != null) {
+                        String mrn = getValueFromDocByKey(patient, "mrn", String.class);
+                        if (mrn != null && !mrn.isEmpty()) {
+                            mrnSet.add(mrn);
+                        }
+                    }
+                }
+                Map<String, InpatientDTO> inpatientMap = inpatientRepository.findByPatientIds(mrnSet);
+
+                int beforeFilter = pids.size();
+                pids.removeIf(pid -> {
+                    Document patient = patientMap.get(pid);
+                    if (patient == null) {
+                        return true; // patient不存在，过滤掉
+                    }
+                    Date icuAdmissionTime = patient.get("icuAdmissionTime") instanceof Date
+                            ? (Date) patient.get("icuAdmissionTime") : null;
+                    if (icuAdmissionTime == null) {
+                        return false; // 无入科时间，保留
+                    }
+                    LocalDateTime admissionDateTime = icuAdmissionTime.toInstant()
+                            .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+
+                    // 入科时间在窗口结束之后（即入科时间 >= windowEnd），过滤掉
+                    if (!admissionDateTime.isBefore(window.getEnd())) {
+                        log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 入科时间={} 在窗口结束={}之后，跳过汇总",
+                                traceId, pid, admissionDateTime, window.getEnd());
+                        return true;
+                    }
+
+                    // 出科时间在窗口结束之前（即出科时间 < windowEnd），过滤掉（出科当天不回传出入量）
+                    String mrn = getValueFromDocByKey(patient, "mrn", String.class);
+                    if (mrn != null) {
+                        InpatientDTO inpatient = inpatientMap.get(mrn);
+                        if (inpatient != null && inpatient.getDischargeTime() != null) {
+                            LocalDateTime dischargeTime = inpatient.getDischargeTime();
+                            if (dischargeTime.isBefore(window.getEnd())) {
+                                log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} 在窗口结束={}之前，跳过汇总",
+                                        traceId, pid, dischargeTime, window.getEnd());
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                });
+                log.info("STEP_01_PATIENT_SELECTED traceId={} 过滤入科出科时间后候选pid数量={} 过滤了{}个",
+                        traceId, pids.size(), beforeFilter - pids.size());
+            }
+
             return pids;
         } catch (Exception e) {
             log.error("STEP_01_PATIENT_SELECTED traceId={} 查询候选患者异常", traceId, e);

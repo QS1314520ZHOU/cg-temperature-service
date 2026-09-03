@@ -38,31 +38,31 @@ public class InpatientRepository {
     /**
      * 查询在科患者
      *
-     * @param wardCode 科室编码
+     * @param deptCode 科室编码
      * @return 在科患者列表
      */
-    public List<InpatientDTO> findInpatients(String wardCode) {
+    public List<InpatientDTO> findInpatients(String deptCode) {
         if (jdbcTemplate == null) {
             log.warn("Kingbase JdbcTemplate未初始化，无法查询在科患者");
             return Collections.emptyList();
         }
 
         try {
-            String sql = "SELECT patient_id, mrn, series, name, ward_code, status, " +
+            String sql = "SELECT patient_id, mrn, series, name, dept_code as ward_code, status, " +
                     "admission_time, admission_ward_time, discharge_time, height, weight " +
                     "FROM " + SCHEMA + ".inpatients " +
-                    "WHERE status = ? AND ward_code = ?";
+                    "WHERE status = ? AND dept_code = ?";
 
             List<InpatientDTO> result = jdbcTemplate.query(
                     sql,
                     new BeanPropertyRowMapper<>(InpatientDTO.class),
-                    "in", wardCode
+                    "in", deptCode
             );
 
-            log.info("查询在科患者成功，wardCode={}, count={}", wardCode, result.size());
+            log.info("查询在科患者成功，deptCode={}, count={}", deptCode, result.size());
             return result;
         } catch (Exception e) {
-            log.error("查询在科患者失败，wardCode={}", wardCode, e);
+            log.error("查询在科患者失败，deptCode={}", deptCode, e);
             return Collections.emptyList();
         }
     }
@@ -80,7 +80,7 @@ public class InpatientRepository {
         }
 
         try {
-            String sql = "SELECT patient_id, mrn, series, name, ward_code, status, " +
+            String sql = "SELECT patient_id, mrn, series, name, dept_code as ward_code, status, " +
                     "admission_time, admission_ward_time, discharge_time, height, weight " +
                     "FROM " + SCHEMA + ".inpatients " +
                     "WHERE patient_id = ?";
@@ -130,7 +130,7 @@ public class InpatientRepository {
         try {
             // 构建 IN 子句的占位符
             String placeholders = uniqueIds.stream().map(id -> "?").collect(Collectors.joining(", "));
-            String sql = "SELECT patient_id, mrn, series, name, ward_code, status, " +
+            String sql = "SELECT patient_id, mrn, series, name, dept_code as ward_code, status, " +
                     "admission_time, admission_ward_time, discharge_time, height, weight " +
                     "FROM " + SCHEMA + ".inpatients " +
                     "WHERE patient_id IN (" + placeholders + ")";
@@ -160,6 +160,39 @@ public class InpatientRepository {
     public java.time.LocalDateTime getAdmissionWardTime(String patientId) {
         InpatientDTO inpatient = findByPatientId(patientId);
         return inpatient != null ? inpatient.getAdmissionWardTime() : null;
+    }
+
+    /**
+     * 查询最近出科的患者（出科时间在指定时间之后）
+     *
+     * @param deptCode 科室编码
+     * @param since    出科时间起点（查询该时间之后出科的患者）
+     * @return 出科患者列表
+     */
+    public List<InpatientDTO> findRecentDischargedPatients(String deptCode, java.time.LocalDateTime since) {
+        if (jdbcTemplate == null) {
+            log.warn("Kingbase JdbcTemplate未初始化，无法查询出科患者");
+            return Collections.emptyList();
+        }
+
+        try {
+            String sql = "SELECT patient_id, mrn, series, name, dept_code as ward_code, status, " +
+                    "admission_time, admission_ward_time, discharge_time, height, weight " +
+                    "FROM " + SCHEMA + ".inpatients " +
+                    "WHERE status = ? AND dept_code = ? AND discharge_time >= ?";
+
+            List<InpatientDTO> result = jdbcTemplate.query(
+                    sql,
+                    new BeanPropertyRowMapper<>(InpatientDTO.class),
+                    "discharged", deptCode, since
+            );
+
+            log.info("查询最近出科患者成功，deptCode={}, since={}, count={}", deptCode, since, result.size());
+            return result;
+        } catch (Exception e) {
+            log.error("查询最近出科患者失败，deptCode={}, since={}", deptCode, since, e);
+            return Collections.emptyList();
+        }
     }
 
     /**

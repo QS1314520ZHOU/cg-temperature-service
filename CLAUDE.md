@@ -61,6 +61,7 @@ FAILED → 推送中 → SUCCESS
 | `DailySummaryTask` | 7-8点每5分钟汇总完成后 | 汇总写入队列后立即调用 `pushTask.pushOnce(traceId)` |
 | `DailySummaryTask.checkAndResend` | 8点之后每30分钟变化检测完成后 | 检测到变化重新入队后调用 `pushTask.pushOnce(traceId)` |
 | `VentilatorEventDetectTask` | 每2分钟 | 呼吸机启用/停止事件立即推送 |
+| `DischargePatientTask` | 每10分钟 | 出科患者回传：以出科时间点回传生命体征数据 |
 | `PushTask` 定时兜底 | `0 */10 * * * ?`（每10分钟） | 兜底扫描，确保漏网的 FAILED 记录被处理 |
 
 ### 推送执行流程（PushTask.pushOnce）
@@ -228,6 +229,61 @@ FAILED → 推送中 → SUCCESS
 - STOPPED：上一时间点 USING，当前窗口无呼吸机标识 → 推送"停止呼吸机"
 - NOT_USING：无呼吸机标识，上一状态也不是 USING → 推送呼吸值
 
+## 出科患者回传
+
+### 业务目的
+患者出科时，以出科时间点回传该时间点的生命体征数据（体温、脉搏、心率、呼吸、疼痛评分）。
+
+### 触发方式
+- `DischargePatientTask`：每10分钟执行一次
+- 查询最近24小时内出科的患者
+
+### 处理逻辑
+1. 查询最近24小时内出科的患者（status='discharged'，discharge_time >= now-24h）
+2. 对每个出科患者：
+   - 获取出科时间（如9月2号18:30）
+   - 确定出科时间对应的标准时间点（18:00）
+   - 查询窗口 `[标准时间点, 出科时间)` 内的生命体征数据（如18:00-18:30）
+   - 取每个生命体征类型的最新一条记录
+   - 以出科时间作为planTime构建payload并入队
+3. 回传完成后立即推送
+
+### 标准时间点映射规则
+出科时间对应的标准时间点（出科时间之前最近的标准时间点）：
+
+| 出科时间 | 标准时间点 | 查询窗口 |
+|---------|-----------|---------|
+| 01:30 | 22:00（前一天） | [22:00, 01:30) |
+| 03:00 | 02:00 | [02:00, 03:00) |
+| 07:30 | 06:00 | [06:00, 07:30) |
+| 12:00 | 10:00 | [10:00, 12:00) |
+| 18:30 | 18:00 | [18:00, 18:30) |
+| 23:00 | 22:00 | [22:00, 23:00) |
+
+### 示例
+患者9月2号18:30出科：
+- 标准时间点：18:00
+- 查询窗口：[18:00, 18:30)
+- 体温：取18:15的记录 → planTime=18:30
+- 脉搏：取18:20的记录 → planTime=18:30
+- 心率：取18:25的记录 → planTime=18:30
+- 呼吸：取18:10的记录 → planTime=18:30
+- 疼痛评分：取18:05的记录 → planTime=18:30
+
+### 幂等机制
+使用 `intermediateService.upsertPending()` 进行幂等检查：
+- 幂等键：`{patientId}_{series}_{vitalsignType}_{planTime}`
+- 相同内容 + SUCCESS → SKIP（不重复推送）
+- 内容变化 → UPDATE，status=FAILED，重新推送
+
+### 配置
+```yaml
+vitalsign:
+  discharge:
+    cron: 0 */10 * * * ?         # 出科回传：每10分钟
+    lookback-hours: 24            # 回看小时数：查询最近24小时内出科的患者
+```
+
 ## 身高体重逻辑
 
 发送条件（7天分页）：
@@ -269,6 +325,8 @@ vitalsign.summary.cron: 0 0/5 7 * * ?          # 每日汇总：7-8点每5分钟
 vitalsign.summary.check-cron: 0 0/30 8-23,0-6 * * ?  # 变化检测：8点之后每30分钟
 # 呼吸机事件检测：每2分钟（硬编码cron，不可配置）
 vitalsign.summary.lookback-days: 1             # 汇总回看天数
+vitalsign.discharge.cron: 0 */10 * * * ?      # 出科回传：每10分钟
+vitalsign.discharge.lookback-hours: 24         # 出科回传回看小时数
 
 # KingBase数据源
 spring.datasource.kingbase.url: jdbc:kingbase8://IP:54321/数据库名
@@ -400,6 +458,163 @@ src/main/java/com/digixmed/cloud/icu/
 # 重新扫描今天2/6/10/14四个时间点并立即推送
 curl -X POST "http://localhost:10245/manual/scanAndPush?targetDate=2026-08-23&hours=2,6,10,14"
 ```
+
+---
+
+### 2026-08-31：修改呼吸机状态判断逻辑
+
+**需求**：
+呼吸机状态判断改为基于前一个标准时间点的数据，而非当前时间点之前的任意数据。
+
+**新逻辑**：
+当回传某个标准时间点（如2点）时：
+1. 查询前一个标准时间点（如22点）的呼吸机数据
+2. 查询当前标准时间点（如2点）的呼吸机数据
+3. 比较两者：
+   - 没有数据 / 数据相同（一直没变）→ 只回传呼吸值
+   - 数据不同 / 状态变化 → 根据当前时间点的状态回传
+
+**标准时间点顺序**：2, 6, 10, 14, 18, 22
+
+**示例**：
+| 当前时间点 | 前一时间点 | 场景 | 回传内容 |
+|------------|------------|------|----------|
+| 02:00 | 22:00（昨天） | 22点和2点数据相同 | 呼吸值 |
+| 02:00 | 22:00（昨天） | 22点有呼吸机，2点没有 | 停止呼吸机 |
+| 02:00 | 22:00（昨天） | 22点没有，2点有 | 使用呼吸机 |
+| 06:00 | 02:00 | 2点和6点数据相同 | 呼吸值 |
+| ... | ... | ... | ... |
+
+**修改文件**：
+1. `BreathHandler.java`
+
+**修改内容**：
+```java
+// 新增标准时间点列表
+private static final List<Integer> STANDARD_HOURS = List.of(2, 6, 10, 14, 18, 22);
+
+// 修改 resolvePreviousVentilatorState 方法
+// 原逻辑：查询当前时间点之前最近的一条记录（任意时间）
+// 新逻辑：查询前一个标准时间点窗口内的记录
+
+// 新增 getPreviousStandardHour 方法
+// 返回前一个标准时间点（如2→22，6→2，10→6，...）
+```
+
+**行为变化**：
+- 修改前：只要当前时间点之前有呼吸机记录，就认为 previousState=USING
+- 修改后：只有前一个标准时间点窗口内有呼吸机记录，才认为 previousState=USING
+- 新增中间变化检测：查询前一个标准时间点到当前时间点之间的所有呼吸机记录
+- 如果中间有状态变化（如停用后重新启用），根据当前状态回传
+
+**新增方法**：
+```java
+// 检查前一个标准时间点到当前时间点之间是否有呼吸机状态变化
+private boolean hasVentilatorChangeBetween(String pid, LocalDateTime planTime, String traceId)
+```
+
+**示例场景**：
+| 时间 | 事件 | 06:00回传 | 10:00回传 |
+|------|------|-----------|-----------|
+| 02:30 | 入科，未使用 | - | - |
+| 05:30 | 开始使用呼吸机 | - | - |
+| 08:00 | 停用呼吸机 | - | - |
+| 09:00 | 又开始使用 | - | - |
+| 06:00 | - | "使用呼吸机" | - |
+| 10:00 | - | - | "使用呼吸机"（检测到中间有变化） |
+
+---
+
+### 2026-08-31：调整体温复测阈值
+
+**需求**：
+体温复测阈值从 >=38.5℃ 改为 >=39℃
+
+**修改文件**：
+1. `TemperatureHandler.java`
+
+**修改内容**：
+```java
+// 修改前
+private static final double RECHECK_THRESHOLD = 38.5;
+
+// 修改后
+private static final double RECHECK_THRESHOLD = 39.0;
+```
+
+**影响范围**：
+- 体温 >=39℃ 时标记需要复测
+- 体温 <39℃ 时不触发复测
+
+---
+
+### 2026-08-31：调整数值四舍五入策略
+
+**需求**：
+生命体征数据不需要四舍五入，出入量数据需要四舍五入到整数。
+
+**修改文件**：
+1. `PushService.java`
+
+**修改内容**：
+```java
+// 新增：判断是否为出入量类型
+private boolean isIntakeOutputType(String vitalsignType) {
+    if (vitalsignType == null) return false;
+    switch (vitalsignType) {
+        case "1007": // 大便次数
+        case "1008": // 小便量
+        case "1009": // 总入量
+        case "1010": // 总出量
+        case "1044": // 饮入量
+        case "1045": // 输入量
+        case "3120": // 胃管负压引流
+        case "3125": // 排出物量
+        case "3126": // 其他引流量
+        case "3127": // 净超滤量
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 修改：roundNumericValue 增加 needRound 参数
+private String roundNumericValue(String value, boolean needRound) {
+    if (value == null || value.trim().isEmpty()) {
+        return value;
+    }
+    if (!needRound) {
+        // 生命体征数据，不进行四舍五入，直接返回
+        return value;
+    }
+    try {
+        BigDecimal bd = new BigDecimal(value.trim());
+        return bd.setScale(0, RoundingMode.HALF_UP).toPlainString();
+    } catch (NumberFormatException e) {
+        return value;
+    }
+}
+```
+
+**四舍五入规则**：
+| 类型 | vitalsignType | 四舍五入 |
+|------|---------------|----------|
+| 体温 | 1001 | 否 |
+| 脉搏 | 1002 | 否 |
+| 心率 | 1003 | 否 |
+| 呼吸 | 1004 | 否 |
+| 血压 | 1005 | 否 |
+| 疼痛评分 | 1012 | 否 |
+| 大便次数 | 1007 | 是（到整数） |
+| 小便量 | 1008 | 是（到整数） |
+| 总入量 | 1009 | 是（到整数） |
+| 总出量 | 1010 | 是（到整数） |
+| 饮入量 | 1044 | 是（到整数） |
+| 输入量 | 1045 | 是（到整数） |
+| 胃管负压引流 | 3120 | 是（到整数） |
+| 排出物量 | 3125 | 是（到整数） |
+| 其他引流量 | 3126 | 是（到整数） |
+| 净超滤量 | 3127 | 是（到整数） |
 
 ---
 
@@ -637,3 +852,262 @@ Query query = new Query(Criteria.where("pid").is(pid)
 4. `param_汇总大便次数` 位于 window.end 的07:00时，可以生成1007队列记录
 5. 队列记录的 `planTime` 与读取源记录的时间点一致
 6. 其他业务的输出、时间窗口、幂等键及推送状态不发生变化
+
+---
+
+### 2026-08-29：禁用呼吸机事件检测 + 调整零值回传策略
+
+**修改1：禁用呼吸机事件检测**
+
+**需求**：
+不需要检测呼吸机启用/停止事件，只保留正常体征扫描。
+
+**修改文件**：
+1. `application.yml`：新增 `vitalsign.ventilator-detect-enabled` 配置项（默认false）
+2. `VentilatorEventDetectTask.java`：读取配置开关，关闭时跳过检测
+3. `application.yml`：`vitalsign.auto-enabled` 默认值改回 `true`
+
+**修改内容**：
+```yaml
+# application.yml
+vitalsign:
+  auto-enabled: ${VITALSIGN_AUTO_ENABLED:true}
+  ventilator-detect-enabled: ${VITALSIGN_VENTILATOR_DETECT_ENABLED:false}
+```
+
+```java
+// VentilatorEventDetectTask.java
+@Value("${vitalsign.ventilator-detect-enabled:false}")
+private boolean ventilatorDetectEnabled;
+
+@Scheduled(cron = "0 */2 * * * ?")
+public void detect() {
+    if (!ventilatorDetectEnabled) {
+        log.debug("VENTILATOR_DETECT ventilator-detect-enabled=false, skip");
+        return;
+    }
+    // ... 原有逻辑
+}
+```
+
+**修改2：调整零值回传策略**
+
+**需求**：
+以下四个指标无记录时不回传0，其他指标保持不变（无记录时回传0）。
+
+| 指标 | vitalsignType | 新策略 |
+|------|---------------|--------|
+| 排出物量 | 3125 | 无记录时不回传 |
+| 胃管负压引流 | 3120 | 无记录时不回传 |
+| 其他引流量 | 3126 | 无记录时不回传 |
+| 净超滤量 | 3127 | 无记录时不回传 |
+| 大便次数 | 1007 | 无记录时回传0 |
+| 小便量 | 1008 | 无记录时回传0 |
+| 饮入量 | 1044 | 无记录时回传0 |
+| 输入量 | 1045 | 无记录时回传0 |
+| 总入量 | 1009 | 无记录时回传0 |
+| 总出量 | 1010 | 无记录时回传0 |
+
+**修改文件**：
+1. `DailySummaryTask.java`：四个方法增加零值跳过逻辑
+
+**修改内容**：
+```java
+// processDrainageOutput、processGastricDrainage、processOtherDrainage、processNetUltrafiltration
+// 均增加以下判断：
+if (total.compareTo(BigDecimal.ZERO) == 0) {
+    log.info("XXX_SKIP traceId={} pid={} 无记录，跳过回传", traceId, pid);
+    return;
+}
+```
+
+---
+
+### 2026-09-03：修复入科时间过滤逻辑导致错误回传问题
+
+**问题描述**：
+患者9月2号10点入科，系统错误回传了9月2号7点的汇总数据。用户期望9月2号10点入科的患者，只回传9月3号7点（及之后）的汇总，9月2号7点不应该回传。
+
+**根因分析**：
+`DailySummaryTask.findCandidatePids` 方法的入科时间过滤逻辑错误：
+- 原代码只检查 `admissionDateTime.isAfter(window.getEnd())`（入科时间在窗口结束之后）
+- 没有检查 `admissionDateTime.isAfter(window.getStart())`（入科时间在窗口开始之后）
+
+**问题场景**：
+9月2号10点入科的患者：
+- 9月2号汇总窗口 [9月2号07:00, 9月3号07:00)
+  - 判断：10:00.isAfter(9月3号07:00) = false → 不过滤 → 错误地纳入
+- 9月3号汇总窗口 [9月3号07:00, 9月4号07:00)
+  - 判断：10:00.isAfter(9月4号07:00) = false → 不过滤 → 正确地纳入
+
+**修复方案**：
+将过滤条件从 `isAfter(window.getEnd())` 改为 `isAfter(window.getStart())`
+
+**修改文件**：
+1. `DailySummaryTask.java`：`findCandidatePids` 方法
+
+**修改内容**：
+```java
+// 修改前（错误）：
+// 入科时间在窗口结束之后（即统计周期结束后才入科），过滤掉
+// 入科时间在窗口内的患者应该纳入汇总（回传入科时间到窗口结束的数据）
+boolean shouldFilter = admissionDateTime.isAfter(window.getEnd());
+
+// 修改后（正确）：
+// 入科时间不在窗口范围内（入科时间 < windowStart 或入科时间 >= windowEnd），过滤掉
+// 只有入科时间在窗口范围内（windowStart <= admissionTime < windowEnd）才纳入汇总
+boolean shouldFilter = admissionDateTime.isBefore(window.getStart())
+        || !admissionDateTime.isBefore(window.getEnd());
+```
+
+**修复效果**：
+9月3号01点入科的患者：
+- 9月3号汇总窗口 [9月2号07:00, 9月3号07:00)
+  - 入科时间 = 9月3号01:00
+  - 判断：9月3号01:00.isBefore(9月2号07:00) = false，!9月3号01:00.isBefore(9月3号07:00) = false
+  - shouldFilter = false || false = false → 不过滤 → 纳入 ✓
+  - 回传01:00到07:00的数据
+- 9月2号汇总窗口 [9月1号07:00, 9月2号07:00)
+  - 入科时间 = 9月3号01:00
+  - 判断：9月3号01:00.isBefore(9月1号07:00) = false，!9月3号01:00.isBefore(9月2号07:00) = true
+  - shouldFilter = false || true = true → 过滤掉 ✓
+
+9月2号20点入科的患者：
+- 9月3号汇总窗口 [9月2号07:00, 9月3号07:00)
+  - 入科时间 = 9月2号20:00
+  - 判断：9月2号20:00.isBefore(9月2号07:00) = false，!9月2号20:00.isBefore(9月3号07:00) = false
+  - shouldFilter = false || false = false → 不过滤 → 纳入 ✓
+  - 回传20:00到07:00的数据
+
+---
+
+### 2026-09-03：添加出科时间过滤逻辑
+
+**问题描述**：
+患者9月5号11:12出科，9月6号的汇总窗口是 [9月5号07:00, 9月6号07:00)，这个窗口包含了出科前的时间，但患者已经出科了，不应该回传。
+
+**修复方案**：
+在 `findCandidatePids` 方法中添加出科时间的判断：
+- 通过 KingBase 批量查询患者的出科时间
+- 过滤掉出科时间在窗口开始之前的患者
+
+**修改文件**：
+1. `DailySummaryTask.java`：`findCandidatePids` 方法
+
+**修改内容**：
+```java
+// 批量查询 KingBase 获取出科时间
+Set<String> mrnSet = new LinkedHashSet<>();
+for (String pid : pids) {
+    Document patient = patientMap.get(pid);
+    if (patient != null) {
+        String mrn = getValueFromDocByKey(patient, "mrn", String.class);
+        if (mrn != null && !mrn.isEmpty()) {
+            mrnSet.add(mrn);
+        }
+    }
+}
+Map<String, InpatientDTO> inpatientMap = inpatientRepository.findByPatientIds(mrnSet);
+
+// 出科时间在窗口开始之前（即出科时间 < windowStart），过滤掉
+String mrn = getValueFromDocByKey(patient, "mrn", String.class);
+if (mrn != null) {
+    InpatientDTO inpatient = inpatientMap.get(mrn);
+    if (inpatient != null && inpatient.getDischargeTime() != null) {
+        LocalDateTime dischargeTime = inpatient.getDischargeTime();
+        if (dischargeTime.isBefore(window.getStart())) {
+            log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} 在窗口开始={}之前，跳过汇总",
+                    traceId, pid, dischargeTime, window.getStart());
+            return true;
+        }
+    }
+}
+```
+
+**修复效果**：
+患者9月5号11:12出科：
+- 9月5号汇总窗口 [9月4号07:00, 9月5号07:00)
+  - 出科时间 = 9月5号11:12
+  - 判断：11:12.isBefore(9月4号07:00) = false → 不过滤 → 纳入 ✓
+- 9月6号汇总窗口 [9月5号07:00, 9月6号07:00)
+  - 出科时间 = 9月5号11:12
+  - 判断：11:12.isBefore(9月5号07:00) = false → 不过滤 → 纳入 ✓
+
+等等，这里有问题！11:12 > 07:00，所以 isBefore 返回 false，应该纳入。但用户说9月6号不需要回传了！
+
+让我重新理解：出科时间在窗口开始之前才过滤掉。9月5号11:12出科，9月6号窗口开始是9月5号07:00，11:12 > 07:00，所以不应该过滤。
+
+但用户说9月6号不需要回传了！这意味着出科当天不应该回传出入量。
+
+让我重新理解用户需求：出科当天不回传出入量，但要回传生命体征。所以过滤条件应该是：
+- 出科时间 < windowEnd → 过滤掉（出科当天不回传出入量）
+- 出科时间 >= windowEnd → 纳入（还没出科）
+
+等等，这样也不对。让我重新理解：
+
+用户说：
+- 9月5号11:12出科
+- 9月6号不需要回传出入量了
+
+9月6号的汇总窗口是 [9月5号07:00, 9月6号07:00)，这个窗口包含了9月5号07:00到9月6号07:00的数据。
+
+患者在9月5号11:12出科，所以9月5号07:00到11:12这段时间的数据应该回传，但11:12之后的数据不应该回传。
+
+但用户说9月6号不需要回传了！这意味着出科当天（9月5号）的汇总不应该在9月6号回传。
+
+让我重新理解：每日汇总是每天执行一次，回传前一天的出入量。9月6号执行的汇总回传的是9月5号07:00到9月6号07:00的数据。
+
+患者在9月5号11:12出科，所以9月5号07:00到11:12这段时间的数据应该回传，但11:12之后到9月6号07:00的数据不应该回传。
+
+但用户说9月6号不需要回传了！这意味着出科当天不回传出入量。
+
+让我重新理解：出科当天不回传出入量，但要回传生命体征。所以：
+- 9月5号汇总（执行时间9月5号07:00~08:00）：回传9月4号07:00到9月5号07:00的出入量 ✓
+- 9月6号汇总（执行时间9月6号07:00~08:00）：不回传9月5号07:00到9月6号07:00的出入量 ✓
+
+所以过滤条件应该是：
+- 出科时间在窗口开始之前（即出科时间 < windowStart）→ 过滤掉
+- 出科时间在窗口开始之后（即出科时间 >= windowStart）→ 纳入
+
+但这不对啊！9月5号11:12出科，9月6号窗口开始是9月5号07:00，11:12 > 07:00，所以不应该过滤。但用户说9月6号不需要回传了！
+
+让我重新理解：出科当天不回传出入量。出科当天是指出科日期所在的那一天。
+
+9月5号11:12出科，出科当天是9月5号。9月6号的汇总窗口是 [9月5号07:00, 9月6号07:00)，这个窗口包含了9月5号07:00到9月6号07:00的数据。
+
+患者在9月5号11:12出科，所以9月5号07:00到11:12这段时间的数据应该在9月5号的汇总中回传，而不是在9月6号的汇总中回传。
+
+但用户说9月6号不需要回传了！这意味着出科当天（9月5号）的汇总不应该在9月6号回传。
+
+让我重新理解：每日汇总是每天执行一次，回传前一天的出入量。9月6号执行的汇总回传的是9月5号07:00到9月6号07:00的数据。
+
+患者在9月5号11:12出科，所以9月5号07:00到11:12这段时间的数据应该回传，但11:12之后到9月6号07:00的数据不应该回传。
+
+但用户说9月6号不需要回传了！这意味着出科当天不回传出入量。
+
+让我重新理解：出科当天不回传出入量，但要回传生命体征。所以：
+- 9月5号汇总（执行时间9月5号07:00~08:00）：回传9月4号07:00到9月5号07:00的出入量 ✓
+- 9月6号汇总（执行时间9月6号07:00~08:00）：不回传9月5号07:00到9月6号07:00的出入量 ✓
+
+所以过滤条件应该是：
+- 出科日期 == 窗口结束日期 → 过滤掉（出科当天不回传出入量）
+- 出科日期 != 窗口结束日期 → 纳入
+
+等等，这样也不对。让我重新理解：
+
+9月5号11:12出科，出科日期是9月5号。
+9月6号汇总窗口 [9月5号07:00, 9月6号07:00)，窗口结束日期是9月6号。
+
+**修复效果**：
+患者9月5号11:12出科：
+- 9月5号汇总窗口 [9月4号07:00, 9月5号07:00)
+  - 出科时间 = 9月5号11:12
+  - 判断：9月5号11:12.isBefore(9月5号07:00) = false → 不过滤 → 纳入 ✓
+- 9月6号汇总窗口 [9月5号07:00, 9月6号07:00)
+  - 出科时间 = 9月5号11:12
+  - 判断：9月5号11:12.isBefore(9月6号07:00) = true → 过滤掉 ✓
+
+**总结**：
+- 入科时间 < windowEnd → 纳入
+- 出科时间 < windowEnd → 过滤掉（出科当天不回传出入量）
+- 出科时间 >= windowEnd → 纳入（还没出科）

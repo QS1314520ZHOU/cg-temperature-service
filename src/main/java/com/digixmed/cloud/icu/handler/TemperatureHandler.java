@@ -39,7 +39,7 @@ import java.util.List;
 @Component
 public class TemperatureHandler extends BaseVitalSignHandler {
 
-    private static final double RECHECK_THRESHOLD = 38.5;
+    private static final double RECHECK_THRESHOLD = 39.0;
     private static final String SOURCE_CODE = "param_T";
     private static final String LOCATION_CODE = "param_tiWenBuWei";
 

@@ -9,6 +9,7 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -59,6 +60,10 @@ public class VentilatorEventDetectTask {
     private static final String VENTILATOR_ROUTE_CODE = "param_XiYangTuJing";
     private static final Set<String> VENTILATOR_FLAGS = Set.of("无创", "有创", "高流量湿化氧疗");
 
+    /** 呼吸机事件检测开关 */
+    @Value("${vitalsign.ventilator-detect-enabled:false}")
+    private boolean ventilatorDetectEnabled;
+
     /** 查询窗口：最近12小时有 param_XiYangTuJing 记录的患者才纳入检测 */
     private static final int LOOKBACK_HOURS = 12;
 
@@ -88,6 +93,10 @@ public class VentilatorEventDetectTask {
      */
     @Scheduled(cron = "0 */2 * * * ?")
     public void detect() {
+        if (!ventilatorDetectEnabled) {
+            log.debug("VENTILATOR_DETECT ventilator-detect-enabled=false, skip");
+            return;
+        }
         String traceId = TraceIdGenerator.generate();
         LocalDateTime now = timeWindowService.now();
         Date nowDate = Date.from(now.atZone(ZONE).toInstant());
@@ -191,26 +200,35 @@ public class VentilatorEventDetectTask {
 
         Boolean previousState = lastPushedState.get(pid);
 
+        // 记录当前呼吸机状态详情（便于日志分析）
+        log.info("VENTILATOR_STATUS traceId={} pid={} currentMode={} isVentilatorActive={} isNewRecord={} lastTime={} recordTime={}",
+                traceId, pid, mode, isVentilatorActive, isNewRecord,
+                lastTime != null ? lastTime.getTime() : "null",
+                recordTime.getTime());
+
         if (isNewRecord) {
             if (previousState == null) {
-                // 首次检测：查询前一个小时的数据来判断历史状态
-                Date oneHourBefore = Date.from(nowDate.toInstant().minus(java.time.Duration.ofHours(1)));
+                // 首次检测：查询当前时间之前最近的一条呼吸机记录（不限时间范围）
                 Query historyQuery = new Query(Criteria.where("pid").is(pid)
                         .and("code").is(VENTILATOR_ROUTE_CODE)
-                        .and("time").gte(oneHourBefore).lt(nowDate)
+                        .and("time").lt(nowDate)
                         .and("valid").ne(false).ne(0))
                         .with(Sort.by(Sort.Direction.DESC, "time"))
                         .limit(1);
 
                 Document historyRecord = mongoTemplate.findOne(historyQuery, Document.class, BEDSIDE);
                 boolean previousWasActive = false;
+                String historyMode = null;
                 if (historyRecord != null) {
-                    String historyMode = historyRecord.getString("strVal");
+                    historyMode = historyRecord.getString("strVal");
                     previousWasActive = historyMode != null && VENTILATOR_FLAGS.contains(historyMode.trim());
                 }
 
                 // 初始化状态
                 lastPushedState.put(pid, isVentilatorActive);
+
+                log.info("VENTILATOR_DETECT traceId={} pid={} 首次检测 历史mode={} 历史isVentilatorActive={} 当前isVentilatorActive={}",
+                        traceId, pid, historyMode, previousWasActive, isVentilatorActive);
 
                 // 只有当历史状态不是使用呼吸机，且当前状态是使用呼吸机时才推送
                 if (isVentilatorActive && !previousWasActive) {

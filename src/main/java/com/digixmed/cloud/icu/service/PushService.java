@@ -15,6 +15,8 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -243,8 +245,10 @@ public class PushService {
         dataValue.setRemark(payload.getRemark());
         dataValue.setVitalsignName(payload.getVitalsignName());
         dataValue.setVitalsignType(payload.getVitalsignType());
-        dataValue.setVitalsignNVal1(payload.getVitalsignNVal1());
-        dataValue.setVitalsignNVal2(payload.getVitalsignNVal2());
+        // 出入量数据需要四舍五入，生命体征数据不需要
+        boolean isIntakeOutput = isIntakeOutputType(payload.getVitalsignType());
+        dataValue.setVitalsignNVal1(roundNumericValue(payload.getVitalsignNVal1(), isIntakeOutput));
+        dataValue.setVitalsignNVal2(roundNumericValue(payload.getVitalsignNVal2(), isIntakeOutput));
         dataValue.setVitalsignNVal3(payload.getVitalsignNVal3());
         dataValue.setVitalsignSVal1(payload.getVitalsignSVal1());
         dataValue.setVitalsignSVal2(payload.getVitalsignSVal2());
@@ -265,6 +269,55 @@ public class PushService {
         if (responseMsg == null) return "未知错误";
         String msg = ResponseUtils.extractMsgNode(responseMsg);
         return msg != null ? msg : responseMsg;
+    }
+
+    /**
+     * 判断是否为出入量类型（需要四舍五入）
+     *
+     * @param vitalsignType 体征类型
+     * @return true=出入量类型，需要四舍五入；false=生命体征类型，不需要四舍五入
+     */
+    private boolean isIntakeOutputType(String vitalsignType) {
+        if (vitalsignType == null) return false;
+        switch (vitalsignType) {
+            case "1007": // 大便次数
+            case "1008": // 小便量
+            case "1009": // 总入量
+            case "1010": // 总出量
+            case "1044": // 饮入量
+            case "1045": // 输入量
+            case "3120": // 胃管负压引流
+            case "3125": // 排出物量
+            case "3126": // 其他引流量
+            case "3127": // 净超滤量
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * 对数值字符串进行四舍五入处理
+     *
+     * @param value 数值字符串
+     * @param needRound 是否需要四舍五入（true=出入量，四舍五入到整数；false=生命体征，保持原值）
+     * @return 处理后的字符串，null或空字符串返回null
+     */
+    private String roundNumericValue(String value, boolean needRound) {
+        if (value == null || value.trim().isEmpty()) {
+            return value;
+        }
+        if (!needRound) {
+            // 生命体征数据，不进行四舍五入，直接返回
+            return value;
+        }
+        try {
+            BigDecimal bd = new BigDecimal(value.trim());
+            return bd.setScale(0, RoundingMode.HALF_UP).toPlainString();
+        } catch (NumberFormatException e) {
+            // 非数值类型，保持原样返回
+            return value;
+        }
     }
 
     /**

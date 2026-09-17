@@ -6,8 +6,6 @@ import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.service.IntakeOutputCalculator;
 import com.digixmed.cloud.icu.service.DrugAmountCalculator;
@@ -75,6 +73,10 @@ public class DailySummaryTask {
     @Value("${vitalsign.summary.lookback-days:1}")
     private int summaryLookbackDays;
 
+    /** 变化检测回看天数：检测最近N天的数据变化，默认2天（昨天+前天） */
+    @Value("${vitalsign.summary.check-lookback-days:2}")
+    private int checkLookbackDays;
+
     @Value("${vitalsign.auto-enabled:false}")
     private boolean autoEnabled;
 
@@ -92,9 +94,6 @@ public class DailySummaryTask {
 
     @Autowired
     private IntermediateService intermediateService;
-
-    @Autowired
-    private HeightWeightNurseService heightWeightNurseService;
 
     @Autowired
     private StoolCountHandler stoolCountHandler;
@@ -223,11 +222,13 @@ public class DailySummaryTask {
 
         try {
             LocalDate today = timeWindowService.today();
-            LocalDate yesterday = today.minusDays(1);
-            LocalDate dayBeforeYesterday = today.minusDays(2);
 
-            // 检测昨天 + 前天两天的数据
-            List<LocalDate> checkDates = Arrays.asList(yesterday, dayBeforeYesterday);
+            // 按配置的回看天数生成检测日期列表
+            List<LocalDate> checkDates = new java.util.ArrayList<>();
+            for (int i = 1; i <= checkLookbackDays; i++) {
+                checkDates.add(today.minusDays(i));
+            }
+            log.info("CHECK_RESEND traceId={} 回看天数={} 检测日期={}", traceId, checkLookbackDays, checkDates);
 
             for (LocalDate checkDate : checkDates) {
                 ClinicalTimeWindow window = timeWindowService.buildDailyWindow(checkDate);
@@ -314,12 +315,16 @@ public class DailySummaryTask {
                     admissionHoursToSeven = (int) ((minutes + 30) / 60);
                     log.info("ADMISSION_HOURS traceId={} pid={} icuAdmissionTime={} hoursToSeven={}",
                             patientTraceId, pid, admissionTime, admissionHoursToSeven);
-                    // 入科当天：bedside查询起点取 max(window.start, admissionTime)
-                    Date admissionDateInstant = Date.from(admissionTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
-                    if (admissionDateInstant.after(startDate)) {
-                        startDate = admissionDateInstant;
-                        log.info("ADMISSION_START_ADJUSTED traceId={} pid={} startDate调整为入科时间={}",
-                                patientTraceId, pid, admissionTime);
+                    // 入科当天：bedside查询起点取入科时间所在的整点
+                    // 因为系统按整点记录数据（如09:00-10:00的数据记录在09点），
+                    // 入科时间09:32 → startDate调整为09:00，确保入科时间所在整点的数据能被计算
+                    LocalDateTime admissionLocal = admissionTime;
+                    LocalDateTime roundedTime = admissionLocal.withMinute(0).withSecond(0).withNano(0);
+                    Date roundedDate = Date.from(roundedTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+                    if (roundedDate.after(startDate)) {
+                        startDate = roundedDate;
+                        log.info("ADMISSION_START_ADJUSTED traceId={} pid={} 入科时间={} startDate调整为整点={}",
+                                patientTraceId, pid, admissionTime, roundedTime);
                     }
                 }
             }
@@ -393,7 +398,7 @@ public class DailySummaryTask {
      *   - 查询时间：window.end（次日07:00）
      *   - planTime：window.end
      *   - 幂等键：使用 window.end 作为 planTime
-     *   - 无论是否有记录，都必须生成 1007 payload（无记录时值为 "0"）
+     *   - 无记录时不回传（不再回传0值）
      */
     private void processStoolCount(List<Document> records, Document patient, String pid,
                                     ClinicalTimeWindow window, String traceId) {
@@ -416,45 +421,47 @@ public class DailySummaryTask {
                 .limit(1);
         Document stoolRecord = mongoTemplate.findOne(query, Document.class, "bedside");
 
-        String stoolValue = "0";
-        Date recordTime = pointDate;
-        Object bedsideId = null;
-
-        if (stoolRecord != null) {
-            bedsideId = stoolRecord.get("_id");
-            Object strVal = stoolRecord.get("strVal");
-            log.info("STOOL_FOUND traceId={} pid={} point={} bedsideId={} strVal={}",
-                    traceId, pid, point, bedsideId, strVal);
-
-            // 优先使用 strVal，strVal 为空时尝试 fVal
-            if (strVal != null && !strVal.toString().trim().isEmpty()) {
-                stoolValue = strVal.toString().trim();
-            } else {
-                Object fValObj = stoolRecord.get("fVal");
-                if (fValObj instanceof Number) {
-                    stoolValue = new BigDecimal(((Number) fValObj).toString())
-                            .stripTrailingZeros().toPlainString();
-                    log.info("STOOL_USE_FVAL traceId={} pid={} fVal={} stoolValue={}",
-                            traceId, pid, fValObj, stoolValue);
-                } else {
-                    log.info("STOOL_EMPTY_VAL traceId={} pid={} strVal={} fVal={} 使用默认值0",
-                            traceId, pid, strVal, fValObj);
-                }
-            }
-
-            // 有记录时使用记录时间
-            Object editTimeObj = stoolRecord.get("editTime");
-            if (editTimeObj instanceof Date) {
-                recordTime = (Date) editTimeObj;
-            } else {
-                Object timeObj = stoolRecord.get("time");
-                if (timeObj instanceof Date) {
-                    recordTime = (Date) timeObj;
-                }
-            }
-        } else {
-            log.info("STOOL_NOT_FOUND traceId={} pid={} point={} code=param_汇总大便次数 使用默认值0",
+        // 无记录时不回传
+        if (stoolRecord == null) {
+            log.info("STOOL_SKIP traceId={} pid={} point={} 无大便次数记录，跳过回传",
                     traceId, pid, point);
+            return;
+        }
+
+        Object bedsideId = stoolRecord.get("_id");
+        Object strVal = stoolRecord.get("strVal");
+        log.info("STOOL_FOUND traceId={} pid={} point={} bedsideId={} strVal={}",
+                traceId, pid, point, bedsideId, strVal);
+
+        String stoolValue = "0";
+
+        // 优先使用 strVal，strVal 为空时尝试 fVal
+        if (strVal != null && !strVal.toString().trim().isEmpty()) {
+            stoolValue = strVal.toString().trim();
+        } else {
+            Object fValObj = stoolRecord.get("fVal");
+            if (fValObj instanceof Number) {
+                stoolValue = new BigDecimal(((Number) fValObj).toString())
+                        .stripTrailingZeros().toPlainString();
+                log.info("STOOL_USE_FVAL traceId={} pid={} fVal={} stoolValue={}",
+                        traceId, pid, fValObj, stoolValue);
+            } else {
+                log.info("STOOL_EMPTY_VAL traceId={} pid={} strVal={} fVal={} 跳过回传",
+                        traceId, pid, strVal, fValObj);
+                return;
+            }
+        }
+
+        // 有记录时使用记录时间
+        Date recordTime = pointDate;
+        Object editTimeObj = stoolRecord.get("editTime");
+        if (editTimeObj instanceof Date) {
+            recordTime = (Date) editTimeObj;
+        } else {
+            Object timeObj = stoolRecord.get("time");
+            if (timeObj instanceof Date) {
+                recordTime = (Date) timeObj;
+            }
         }
 
         // 构造虚拟 Document，确保 handler 能处理
@@ -518,6 +525,10 @@ public class DailySummaryTask {
                     traceId, handler.getClass().getSimpleName(), code, pid);
             return;
         }
+
+        // 出入量护士解析：从 param_Yishi 往前搜8小时，兜底 responsibleNurse
+        resolveNurseForPayload(payload, patient, window, traceId);
+
         PayloadTimeNormalizer.anchor(payload, window.getEnd());
         if (admissionHoursToSeven > 0) {
             payload.setVitalsignSVal1(String.valueOf(admissionHoursToSeven));
@@ -535,6 +546,91 @@ public class DailySummaryTask {
                 payload.getVitalsignNVal1() != null ? payload.getVitalsignNVal1() : payload.getVitalsignSVal2(),
                 action,
                 result != null ? result.get("status") : "UNKNOWN");
+    }
+
+    /**
+     * 出入量护士解析：从 param_Yishi 往前搜8小时，兜底 responsibleNurse
+     */
+    private void resolveNurseForPayload(VitalSignPayload payload, Document patient,
+                                         ClinicalTimeWindow window, String traceId) {
+        String pid = getValueFromDocByKey(patient, "_id", String.class);
+        if (pid == null) {
+            return;
+        }
+
+        Date searchBefore = Date.from(window.getEnd().atZone(ZONE).toInstant());
+        Date searchStart = Date.from(searchBefore.toInstant().minus(java.time.Duration.ofHours(8)));
+
+        // 1. 从 param_Yishi 往前搜8小时
+        try {
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false).ne(0)
+                    .and("time").gte(searchStart).lt(searchBefore))
+                    .with(Sort.by(Sort.Direction.DESC, "time"))
+                    .limit(1);
+            Document yishiDoc = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
+            if (yishiDoc != null) {
+                Object editUserObj = yishiDoc.get("editUser");
+                if (editUserObj != null) {
+                    String editUser = editUserObj.toString().trim();
+                    if (!editUser.isEmpty()) {
+                        try {
+                            org.bson.types.ObjectId accountId = new org.bson.types.ObjectId(editUser);
+                            Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+                            Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                            if (account != null) {
+                                String username = account.getString("username");
+                                String trueName = account.getString("trueName");
+                                if (trueName != null && !trueName.trim().isEmpty()) {
+                                    payload.setRecordNurseId(username != null ? username.trim() : "");
+                                    payload.setRecordNurseName(trueName.trim());
+                                    log.info("INTAKE_NURSE traceId={} pid={} nurseId={} nurseName={} source=param_Yishi",
+                                            traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                                    return;
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn("INTAKE_NURSE traceId={} pid={} 查询account失败: {}", traceId, pid, e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("INTAKE_NURSE traceId={} pid={} 搜索param_Yishi异常: {}", traceId, pid, e.getMessage());
+        }
+
+        // 2. 兜底：patient.responsibleNurse
+        Object responsibleObj = patient.get("responsibleNurse");
+        if (responsibleObj != null) {
+            String responsibleName = responsibleObj.toString().trim();
+            if (!responsibleName.isEmpty()) {
+                try {
+                    Query query = new Query(Criteria.where("trueName").is(responsibleName)).limit(1);
+                    Document account = mongoTemplate.findOne(query, Document.class, "account");
+                    if (account != null) {
+                        String username = account.getString("username");
+                        if (username != null && !username.trim().isEmpty()) {
+                            payload.setRecordNurseId(username.trim());
+                            payload.setRecordNurseName(responsibleName);
+                            log.info("INTAKE_NURSE traceId={} pid={} nurseId={} nurseName={} source=responsibleNurse",
+                                    traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                            return;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("INTAKE_NURSE traceId={} pid={} responsibleNurse查询异常: {}", traceId, pid, e.getMessage());
+                }
+            }
+        }
+
+        log.info("INTAKE_NURSE traceId={} pid={} 所有解析方式均失败，使用默认值", traceId, pid);
     }
 
     /**
@@ -814,23 +910,10 @@ public class DailySummaryTask {
             log.info("STEP_01_PATIENT_SELECTED traceId={} 窗口=[{}, {}) 合并后候选pid数量={}",
                     traceId, window.getStart(), window.getEnd(), pids.size());
 
-            // 过滤掉入科时间在窗口开始之后的患者（入科当天07:00之前入科的患者不应回传0值汇总）
-            // 过滤掉出科时间在窗口开始之前的患者（出科后不再回传）
+            // 过滤掉入科时间在窗口结束之后的患者
+            // 过滤掉已出科的患者（使用 MongoDB patient 的 status 和 icuDischargeTime）
             if (!pids.isEmpty()) {
                 Map<String, Document> patientMap = findMongoPatientsByPids(pids);
-
-                // 批量查询 KingBase 获取出科时间
-                Set<String> mrnSet = new LinkedHashSet<>();
-                for (String pid : pids) {
-                    Document patient = patientMap.get(pid);
-                    if (patient != null) {
-                        String mrn = getValueFromDocByKey(patient, "mrn", String.class);
-                        if (mrn != null && !mrn.isEmpty()) {
-                            mrnSet.add(mrn);
-                        }
-                    }
-                }
-                Map<String, InpatientDTO> inpatientMap = inpatientRepository.findByPatientIds(mrnSet);
 
                 int beforeFilter = pids.size();
                 pids.removeIf(pid -> {
@@ -853,15 +936,17 @@ public class DailySummaryTask {
                         return true;
                     }
 
-                    // 出科时间在窗口结束之前（即出科时间 < windowEnd），过滤掉（出科当天不回传出入量）
-                    String mrn = getValueFromDocByKey(patient, "mrn", String.class);
-                    if (mrn != null) {
-                        InpatientDTO inpatient = inpatientMap.get(mrn);
-                        if (inpatient != null && inpatient.getDischargeTime() != null) {
-                            LocalDateTime dischargeTime = inpatient.getDischargeTime();
+                    // 出科判断：使用 MongoDB patient 的 status 和 icuDischargeTime
+                    String patientStatus = getValueFromDocByKey(patient, "status", String.class);
+                    if ("discharged".equals(patientStatus)) {
+                        Date icuDischargeDate = patient.get("icuDischargeTime") instanceof Date
+                                ? (Date) patient.get("icuDischargeTime") : null;
+                        if (icuDischargeDate != null) {
+                            LocalDateTime dischargeTime = icuDischargeDate.toInstant()
+                                    .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
                             if (dischargeTime.isBefore(window.getEnd())) {
-                                log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} 在窗口结束={}之前，跳过汇总",
-                                        traceId, pid, dischargeTime, window.getEnd());
+                                log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} status={} 在窗口结束={}之前，跳过汇总",
+                                        traceId, pid, dischargeTime, patientStatus, window.getEnd());
                                 return true;
                             }
                         }

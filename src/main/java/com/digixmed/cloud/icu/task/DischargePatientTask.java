@@ -1,10 +1,7 @@
 package com.digixmed.cloud.icu.task;
 
 import com.digixmed.cloud.icu.handler.*;
-import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
-import com.digixmed.cloud.icu.model.InpatientDTO;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
-import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
@@ -21,7 +18,6 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
@@ -66,9 +62,6 @@ public class DischargePatientTask {
     private ClinicalTimeWindowService timeWindowService;
 
     @Autowired
-    private InpatientRepository inpatientRepository;
-
-    @Autowired
     private MongoTemplate mongoTemplate;
 
     @Autowired
@@ -104,9 +97,15 @@ public class DischargePatientTask {
         log.info("DISCHARGE_TRIGGERED traceId={} 开始出科患者回传 now={}", traceId, now);
 
         try {
-            // 查询最近24小时内出科的患者
+            // 查询最近24小时内出科的患者（使用 MongoDB patient 的 status、icuDischargeTime、dischargedType）
+            // 只处理转出患者，其他出科类型（如死亡）不需要回传生命体征
             LocalDateTime since = now.minusHours(dischargeLookbackHours);
-            List<InpatientDTO> dischargedPatients = inpatientRepository.findRecentDischargedPatients(wardCode, since);
+            Date sinceDate = Date.from(since.atZone(ZONE).toInstant());
+            Query query = new Query(Criteria.where("status").is("discharged")
+                    .and("deptCode").is(wardCode)
+                    .and("dischargedType").is("转出")
+                    .and("icuDischargeTime").gte(sinceDate));
+            List<Document> dischargedPatients = mongoTemplate.find(query, Document.class, "patient");
             log.info("DISCHARGE_PATIENTS traceId={} 出科患者数量={} since={}", traceId, dischargedPatients.size(), since);
 
             if (dischargedPatients.isEmpty()) {
@@ -117,14 +116,14 @@ public class DischargePatientTask {
             int totalInserted = 0;
             int totalSkipped = 0;
 
-            for (InpatientDTO inpatient : dischargedPatients) {
+            for (Document patientDoc : dischargedPatients) {
                 try {
-                    Map<String, Object> result = processDischargedPatient(inpatient, traceId);
+                    Map<String, Object> result = processDischargedPatient(patientDoc, traceId);
                     totalInserted += (int) result.getOrDefault("inserted", 0);
                     totalSkipped += (int) result.getOrDefault("skipped", 0);
                 } catch (Exception e) {
-                    log.error("DISCHARGE_PATIENT_ERROR traceId={} patientId={} 处理异常",
-                            traceId, inpatient.getPatientId(), e);
+                    String pid = patientDoc != null ? String.valueOf(patientDoc.get("_id")) : "unknown";
+                    log.error("DISCHARGE_PATIENT_ERROR traceId={} pid={} 处理异常", traceId, pid, e);
                 }
             }
 
@@ -145,41 +144,28 @@ public class DischargePatientTask {
     /**
      * 处理单个出科患者
      *
-     * @param inpatient 出科患者信息
-     * @param traceId   追踪ID
+     * @param patientDoc MongoDB patient 文档
+     * @param traceId    追踪ID
      * @return 处理结果（inserted, skipped）
      */
-    private Map<String, Object> processDischargedPatient(InpatientDTO inpatient, String traceId) {
+    private Map<String, Object> processDischargedPatient(Document patientDoc, String traceId) {
         Map<String, Object> result = new LinkedHashMap<>();
         int inserted = 0;
         int skipped = 0;
 
-        String patientId = inpatient.getPatientId();
-        String mrn = inpatient.getMrn();
-        LocalDateTime dischargeTime = inpatient.getDischargeTime();
+        String pid = patientDoc.get("_id").toString();
+        Date icuDischargeDate = patientDoc.get("icuDischargeTime") instanceof Date
+                ? (Date) patientDoc.get("icuDischargeTime") : null;
 
-        if (dischargeTime == null) {
-            log.warn("DISCHARGE_NO_TIME traceId={} patientId={} 无出科时间，跳过", traceId, patientId);
+        if (icuDischargeDate == null) {
+            log.warn("DISCHARGE_NO_TIME traceId={} pid={} 无出科时间，跳过", traceId, pid);
             result.put("inserted", 0);
             result.put("skipped", 0);
             return result;
         }
 
-        // 在MongoDB中查找患者
-        Query patientQuery = new Query(new Criteria().orOperator(
-                Criteria.where("mrn").is(mrn),
-                Criteria.where("hisPid").is(mrn)
-        ));
-        Document patient = mongoTemplate.findOne(patientQuery, Document.class, "patient");
-
-        if (patient == null) {
-            log.warn("DISCHARGE_PATIENT_NOT_FOUND traceId={} patientId={} MongoDB中未找到患者记录", traceId, patientId);
-            result.put("inserted", 0);
-            result.put("skipped", 0);
-            return result;
-        }
-
-        String pid = patient.get("_id").toString();
+        LocalDateTime dischargeTime = icuDischargeDate.toInstant()
+                .atZone(ZONE).toLocalDateTime();
 
         // 确定出科时间对应的标准时间点
         // 标准时间点：02:00, 06:00, 10:00, 14:00, 18:00, 22:00
@@ -196,7 +182,7 @@ public class DischargePatientTask {
 
         // 查询窗口内的生命体征数据
         List<String> vitalCodes = Arrays.asList(
-                CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH, CODE_PAIN);
+                CODE_TEMPERATURE, CODE_PULSE, CODE_HEART_RATE, CODE_BREATH);
 
         for (String code : vitalCodes) {
             try {
@@ -209,7 +195,7 @@ public class DischargePatientTask {
                 Document record = mongoTemplate.findOne(query, Document.class, "bedside");
 
                 if (record != null) {
-                    VitalSignPayload payload = buildPayload(code, record, patient, dischargeTime, traceId);
+                    VitalSignPayload payload = buildPayload(code, record, patientDoc, dischargeTime, traceId);
                     if (payload != null) {
                         PayloadTimeNormalizer.anchor(payload, dischargeTime);
                         Map<String, Object> upsertResult = intermediateService.upsertPending(payload, traceId);
@@ -231,6 +217,28 @@ public class DischargePatientTask {
             } catch (Exception e) {
                 log.error("DISCHARGE_RECORD_ERROR traceId={} pid={} code={} 处理异常", traceId, pid, code, e);
             }
+        }
+
+        // 疼痛评分：查 (前一标准时间点, 出科时间] 范围内最新一条
+        try {
+            LocalDateTime prevHour = previousStandardHour(standardTime);
+            Date painStartDate = Date.from(prevHour.atZone(ZONE).toInstant());
+            Query painQuery = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(CODE_PAIN)
+                    .and("valid").ne(false).ne(0)
+                    .and("time").gt(painStartDate).lte(endDate))
+                    .with(Sort.by(Sort.Direction.DESC, "time"))
+                    .limit(1);
+            Document painRecord = mongoTemplate.findOne(painQuery, Document.class, "bedside");
+            if (painRecord != null) {
+                VitalSignPayload payload = painScoreHandler.handle(painRecord, patientDoc, dischargeTime, traceId);
+                if (payload != null) {
+                    PayloadTimeNormalizer.anchor(payload, dischargeTime);
+                    intermediateService.upsertPending(payload, traceId);
+                }
+            }
+        } catch (Exception e) {
+            log.error("DISCHARGE_PAIN_ERROR traceId={} pid={} 处理异常", traceId, pid, e);
         }
 
         result.put("inserted", inserted);
@@ -263,6 +271,24 @@ public class DischargePatientTask {
 
         // 出科时间在02:00之前，使用前一天的22:00
         return 22;
+    }
+
+    /**
+     * 获取前一个标准时间点
+     *
+     * 02→前一天22, 06→02, 10→06, 14→10, 18→14, 22→18
+     */
+    private LocalDateTime previousStandardHour(LocalDateTime point) {
+        int hour = point.getHour();
+        switch (hour) {
+            case 2:  return point.minusDays(1).withHour(22).withMinute(0).withSecond(0).withNano(0);
+            case 6:  return point.withHour(2).withMinute(0).withSecond(0).withNano(0);
+            case 10: return point.withHour(6).withMinute(0).withSecond(0).withNano(0);
+            case 14: return point.withHour(10).withMinute(0).withSecond(0).withNano(0);
+            case 18: return point.withHour(14).withMinute(0).withSecond(0).withNano(0);
+            case 22: return point.withHour(18).withMinute(0).withSecond(0).withNano(0);
+            default: return point.withMinute(0).withSecond(0).withNano(0).minusHours(4);
+        }
     }
 
     /**

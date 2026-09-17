@@ -1,13 +1,11 @@
 package com.digixmed.cloud.icu.handler;
 
 import com.digixmed.cloud.icu.model.InpatientDTO;
+import com.digixmed.cloud.icu.model.NurseInfo;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.repository.InpatientRepository;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
-import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,6 +20,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -39,8 +38,7 @@ import java.util.function.BiConsumer;
  *     planTime=recordTime=icuAdmissionTime，与入科第一条生命体征一起回传；
  *   - 之后：pageDayIndex > 0 且 % 7 == 0，由 DailySummaryTask 在 reportDate 07:00 回传。
  *
- * 记录者：一律取 HeightWeightNurseService 锁定的记录者，
- *        即"入科第一条回传时对应体温的记录者"，之后永不变化。
+ * 记录者：从 patient.responsibleNurse 解析（按 trueName 查 account 获取 username）。
  *
  * 入科日期基准：以 KingBase inpatients.admission_ward_time 为唯一基准，
  *   不再以 icuAdmissionTime 同天判断替代。
@@ -93,9 +91,6 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     @Autowired
     private ClinicalTimeWindowService timeWindowService;
 
-    @Autowired
-    private HeightWeightNurseService heightWeightNurseService;
-
     public HeightWeightHandler(PatientIdentityMapper patientIdentityMapper) {
         super(patientIdentityMapper);
     }
@@ -109,16 +104,15 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     // ======================== 新公开 API ========================
 
     /**
-     * 入科首次构建（planTime=recordTime=icuAdmissionTime + 1小时）
+     * 入科首次构建（planTime=recordTime=icuAdmissionTime）
      *
      * @param patient           MongoDB patient 文档
      * @param admissionDateTime icuAdmissionTime 原始值（不可变时间点）
-     * @param nurse             锁定的记录者（由调用方传入）
      * @param traceId           追踪ID
      * @return 身高和体重 payload 列表（可能只有一条或零条）
      */
     public List<VitalSignPayload> buildAdmissionFirst(Document patient, LocalDateTime admissionDateTime,
-                                                      NurseRef nurse, String traceId) {
+                                                      String traceId) {
         String pid = readPid(patient);
         if (pid == null) {
             return Collections.emptyList();
@@ -130,15 +124,20 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return Collections.emptyList();
         }
 
-        // 入科第一条：planTime=recordTime=icuAdmissionTime + 1小时
-        LocalDateTime sendTime = admissionDateTime.plusHours(1);
-        return buildPair(patient, pid, formData, nurse, traceId, timeNormalizer -> {
+        // 入科第一条：planTime=recordTime=icuAdmissionTime（使用入科时间本身）
+        LocalDateTime sendTime = admissionDateTime;
+        return buildPair(patient, pid, formData, timeNormalizer -> {
             return sendTime;
-        }, sendTime);
+        }, traceId, sendTime, false);
     }
 
     /**
      * 周期性构建（7天周期，sendTime 由 planFor 计算）
+     *
+     * 业务规则：
+     *   - 入科第一条：直接回传评估单中的原始值
+     *   - 周期性回传：如果评估单中的值是非数值类型（如"平车"、"担架"、"步行"等），
+     *     则替换为"卧床"回传；如果是数值类型，则按原值回传
      *
      * @param pid               MongoDB patient _id
      * @param admissionWardTime admission_ward_time（LocalDateTime）
@@ -159,12 +158,10 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
             return Collections.emptyList();
         }
 
-        NurseRef nurse = heightWeightNurseService.resolve(pid);
-
-        return buildPair(patient, pid, formData, nurse, traceId, timeNormalizer -> {
+        return buildPair(patient, pid, formData, timeNormalizer -> {
             // 周期模式：用 PayloadTimeNormalizer 归一化到 sendTime
             return sendTime;
-        }, sendTime);
+        }, traceId, sendTime, true);
     }
 
     /**
@@ -207,11 +204,14 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
 
     /**
      * 共享构建逻辑：查 dFormData 一次，构建身高和体重两条 payload
+     *
+     * @param isPeriodic 是否为周期性回传（true=周期回传，false=入科第一条）
+     *                   周期性回传时，如果值为非数值类型，替换为"卧床"
      */
     private List<VitalSignPayload> buildPair(Document patient, String pid, Document formData,
-                                              NurseRef nurse, String traceId,
                                               java.util.function.Function<Void, LocalDateTime> timeResolver,
-                                              LocalDateTime anchorTime) {
+                                              String traceId,
+                                              LocalDateTime anchorTime, boolean isPeriodic) {
         List<VitalSignPayload> result = new java.util.ArrayList<>();
 
         for (Metric metric : Metric.values()) {
@@ -222,6 +222,14 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
                 continue;
             }
 
+            // 周期性回传：非数值类型替换为"卧床"
+            String finalValue = value;
+            if (isPeriodic && !isNumericValue(value)) {
+                finalValue = "卧床";
+                log.info("HW_PERIODIC_CONVERT traceId={} pid={} {} 原值={} 非数值类型，替换为卧床",
+                        traceId, pid, metric.name, value);
+            }
+
             LocalDateTime sendTime = timeResolver.apply(null);
 
             VitalSignPayload payload = VitalSignPayload.builder()
@@ -229,18 +237,15 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
                     .vitalsignType(metric.type)
                     .unit(metric.unit)
                     .build();
-            metric.valueSetter.accept(payload, value);
+            metric.valueSetter.accept(payload, finalValue);
 
             fillCommonFields(payload, patient, sendTime, traceId);
-            payload.setRecordTime(sendTime);
-            payload.setSeries("1");
-            payload.setWardCode("125011");
-            payload.setRemark("");
-            payload.setIsValid(1);
-            applyNurse(payload, nurse, pid, traceId);
+            // 入科：不启用往前搜索；周期性：启用往前搜8小时
+            LocalDateTime nurseSearchBefore = isPeriodic ? sendTime : null;
+            applyNurse(payload, patient, pid, traceId, nurseSearchBefore);
 
             log.info("HW_BUILT traceId={} pid={} {}={} unit={} planTime={}",
-                    traceId, pid, metric.name, value, metric.unit, sendTime);
+                    traceId, pid, metric.name, finalValue, metric.unit, sendTime);
             result.add(payload);
         }
 
@@ -248,14 +253,113 @@ public class HeightWeightHandler extends BaseVitalSignHandler {
     }
 
     /**
-     * 写入锁定的记录者；nurse 为空时退化为按 pid 解析
+     * 判断字符串是否为数值类型
+     * 支持整数和小数（如 "160"、"65.5"、"160.0"）
      */
-    private void applyNurse(VitalSignPayload payload, NurseRef nurse, String pid, String traceId) {
-        NurseRef effective = (nurse != null) ? nurse : heightWeightNurseService.resolve(pid);
-        payload.setRecordNurseId(effective.getId());
-        payload.setRecordNurseName(effective.getName());
-        log.info("HW_NURSE traceId={} pid={} 记录者={} pinned={}",
-                traceId, pid, effective.getName(), effective.isPinned());
+    private boolean isNumericValue(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            new java.math.BigDecimal(value.trim());
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 写入记录者
+     *
+     * 入科：param_Yishi at admissionTime → responsibleNurse → 默认
+     * 周期：param_Yishi at sendTime → 往前8h → responsibleNurse → 默认
+     *
+     * @param patient      patient Document（由 buildPair 传入，避免重复查询）
+     * @param searchBefore 非null时启用往前搜索（周期性场景传 sendTime，入科传 null）
+     */
+    private void applyNurse(VitalSignPayload payload, Document patient, String pid,
+                            String traceId, LocalDateTime searchBefore) {
+        NurseInfo nurseInfo = null;
+
+        // 1. param_Yishi at searchBefore（周期性场景；入科场景 searchBefore=null 跳过）
+        if (searchBefore != null) {
+            Date searchTime = Date.from(searchBefore.atZone(ZONE).toInstant());
+            nurseInfo = resolveNurseAtTime(pid, searchTime, mongoTemplate, traceId);
+
+            // 2. 周期性：往前搜8小时
+            if (nurseInfo == null) {
+                nurseInfo = resolveNurseForIntakeOutput(pid, searchTime, mongoTemplate, traceId);
+            }
+        }
+
+        // 3. responsibleNurse
+        if (nurseInfo == null) {
+            nurseInfo = resolveNurseFromResponsible(patient, mongoTemplate, traceId);
+        }
+
+        // 4. 默认
+        if (nurseInfo != null) {
+            payload.setRecordNurseId(nurseInfo.getNurseId());
+            payload.setRecordNurseName(nurseInfo.getNurseName());
+            log.info("HW_NURSE traceId={} pid={} nurseId={} nurseName={} source={}",
+                    traceId, pid, nurseInfo.getNurseId(), nurseInfo.getNurseName(), nurseInfo.getSource());
+        } else {
+            payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+            payload.setRecordNurseName("陈琳");
+            log.warn("HW_NURSE traceId={} pid={} 所有解析方式均失败，使用默认值", traceId, pid);
+        }
+    }
+
+    /**
+     * 从 param_Yishi at 精确时间点解析护士
+     */
+    private NurseInfo resolveNurseAtTime(String pid, Date time, MongoTemplate mongoTemplate, String traceId) {
+        if (pid == null || time == null) {
+            return null;
+        }
+        try {
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false).ne(0)
+                    .and("time").is(time));
+            Document yishiDoc = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
+            if (yishiDoc != null) {
+                Object editUserObj = yishiDoc.get("editUser");
+                if (editUserObj != null) {
+                    String editUser = editUserObj.toString().trim();
+                    if (!editUser.isEmpty()) {
+                        try {
+                            org.bson.types.ObjectId accountId = new org.bson.types.ObjectId(editUser);
+                            Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+                            Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                            if (account != null) {
+                                String username = account.getString("username");
+                                String trueName = account.getString("trueName");
+                                if (trueName != null && !trueName.trim().isEmpty()) {
+                                    return NurseInfo.builder()
+                                            .nurseId(username != null ? username.trim() : "")
+                                            .nurseName(trueName.trim())
+                                            .source("param_Yishi")
+                                            .reasonCode(null)
+                                            .build();
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn("HW_NURSE traceId={} pid={} 查询account失败: {}", traceId, pid, e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("HW_NURSE traceId={} pid={} 查询param_Yishi异常: {}", traceId, pid, e.getMessage());
+        }
+        return null;
     }
 
     /**

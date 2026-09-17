@@ -137,11 +137,23 @@ public class PatientIdentityMapper {
     }
 
     /**
-     * 获取默认series
+     * 获取series值
+     * 优先使用patient.hospitalTime，如果为空则使用默认值
      *
+     * @param patient MongoDB patient文档
      * @return series值
      */
-    public String getSeries() {
+    public String getSeries(org.bson.Document patient) {
+        if (patient == null) {
+            return defaultSeries;
+        }
+
+        String value = readString(patient, "hospitalTime");
+        if (value != null) {
+            return value;
+        }
+
+        log.debug("patient缺少hospitalTime字段，使用默认series={}, _id={}", defaultSeries, patient.get("_id"));
         return defaultSeries;
     }
 

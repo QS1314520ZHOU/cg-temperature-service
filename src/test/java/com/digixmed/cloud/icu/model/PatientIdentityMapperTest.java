@@ -62,9 +62,42 @@ class PatientIdentityMapperTest {
     @Test
     void testGetDefaultValues() {
         // 测试获取默认值
-        assertEquals("1", mapper.getSeries());
+        Document patient = new Document()
+                .append("mrn", "MRN001")
+                .append("hisPid", "HIS001")
+                .append("name", "张三");
+        assertEquals("1", mapper.getSeries(patient));
         assertEquals("125011", mapper.getWardCode());
         assertEquals("dba", mapper.getRecordNurseId());
+    }
+
+    @Test
+    void testGetSeriesFromHospitalTime() {
+        // 测试从hospitalTime获取series
+        Document patient = new Document()
+                .append("mrn", "MRN001")
+                .append("hisPid", "HIS001")
+                .append("name", "张三")
+                .append("hospitalTime", "2");
+
+        assertEquals("2", mapper.getSeries(patient));
+    }
+
+    @Test
+    void testGetSeriesFallbackToDefault() {
+        // 测试hospitalTime为空时使用默认值
+        Document patient = new Document()
+                .append("mrn", "MRN001")
+                .append("hisPid", "HIS001")
+                .append("name", "张三");
+
+        assertEquals("1", mapper.getSeries(patient));
+    }
+
+    @Test
+    void testGetSeriesNullPatient() {
+        // 测试空患者时使用默认值
+        assertEquals("1", mapper.getSeries(null));
     }
 
     @Test

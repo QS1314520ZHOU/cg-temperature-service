@@ -13,6 +13,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -54,11 +55,11 @@ public class NurseResolver {
         // Step 1: try param_Yishi
         String editUserFromParamYishi = findEditUserFromParamYishi(pid, startTime, endTime);
         if (editUserFromParamYishi != null) {
-            String trueName = lookupTrueName(editUserFromParamYishi);
-            if (trueName != null) {
+            AccountInfo info = lookupAccountInfo(editUserFromParamYishi);
+            if (info != null) {
                 return NurseInfo.builder()
-                        .nurseId("041660")
-                        .nurseName(trueName)
+                        .nurseId(info.username)
+                        .nurseName(info.trueName)
                         .source("param_Yishi")
                         .reasonCode(null)
                         .build();
@@ -68,11 +69,11 @@ public class NurseResolver {
         // Step 2: fallback to source record editUser
         String editUserFromRecord = extractEditUser(sourceRecord);
         if (editUserFromRecord != null) {
-            String trueName = lookupTrueName(editUserFromRecord);
-            if (trueName != null) {
+            AccountInfo info = lookupAccountInfo(editUserFromRecord);
+            if (info != null) {
                 return NurseInfo.builder()
-                        .nurseId("041660")
-                        .nurseName(trueName)
+                        .nurseId(info.username)
+                        .nurseName(info.trueName)
                         .source("source_record")
                         .reasonCode(null)
                         .build();
@@ -86,6 +87,40 @@ public class NurseResolver {
                 .source("not_found")
                 .reasonCode("NURSE_NOT_FOUND")
                 .build();
+    }
+
+    /**
+     * 按 responsibleNurse 姓名解析护士
+     *
+     * @param responsibleNurseName patient.responsibleNurse（护士姓名）
+     * @return NurseInfo，未找到返回 null
+     */
+    public NurseInfo resolveByResponsibleNurse(String responsibleNurseName) {
+        if (responsibleNurseName == null || responsibleNurseName.trim().isEmpty()) {
+            return null;
+        }
+        String name = responsibleNurseName.trim();
+
+        // 按 trueName 查询 account 集合
+        try {
+            Query query = new Query(Criteria.where("trueName").is(name)).limit(1);
+            Document account = mongoTemplate.findOne(query, Document.class, "account");
+            if (account != null) {
+                String username = account.getString("username");
+                if (username != null && !username.trim().isEmpty()) {
+                    return NurseInfo.builder()
+                            .nurseId(username.trim())
+                            .nurseName(name)
+                            .source("responsibleNurse")
+                            .reasonCode(null)
+                            .build();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("NurseResolver: failed to query account by trueName={}: {}", name, e.getMessage());
+        }
+
+        return null;
     }
 
     // ------------------------------------------------------------------
@@ -165,39 +200,50 @@ public class NurseResolver {
      * Uses a bounded TTL cache; never caches null/error results.
      */
     private String lookupTrueName(String editUser) {
-        // Check cache
-        CacheEntry cached = accountCache.get(editUser);
-        if (cached != null && !cached.isExpired()) {
-            return cached.trueName;
-        }
-
-        // Query account collection
-        String trueName = queryAccountTrueName(editUser);
-
-        // Cache only non-null results
-        if (trueName != null) {
-            putCache(editUser, trueName);
-        }
-
-        return trueName;
+        AccountInfo info = lookupAccountInfo(editUser);
+        return info != null ? info.trueName : null;
     }
 
     /**
-     * Query the account collection for _id = accountId, return trueName or null.
+     * Look up account._id = editUser and return both username and trueName.
+     * Uses a bounded TTL cache; never caches null/error results.
      */
-    private String queryAccountTrueName(String accountId) {
+    AccountInfo lookupAccountInfo(String editUser) {
+        // Check cache (reuse trueName cache for hit)
+        CacheEntry cached = accountCache.get(editUser);
+        if (cached != null && !cached.isExpired()) {
+            return new AccountInfo(cached.username, cached.trueName);
+        }
+
+        // Query account collection
+        AccountInfo info = queryAccountInfo(editUser);
+
+        // Cache only non-null results
+        if (info != null) {
+            putCache(editUser, info.username, info.trueName);
+        }
+
+        return info;
+    }
+
+    /**
+     * Query the account collection for _id = accountId, return AccountInfo or null.
+     */
+    private AccountInfo queryAccountInfo(String accountId) {
         try {
             Query query = new Query(Criteria.where("_id").is(new ObjectId(accountId)));
             Document account = mongoTemplate.findOne(query, Document.class, "account");
             if (account == null) {
                 return null;
             }
-            Object trueNameObj = account.get("trueName");
-            if (trueNameObj == null) {
+            String username = account.getString("username");
+            String trueName = account.getString("trueName");
+            if (trueName == null || trueName.trim().isEmpty()) {
                 return null;
             }
-            String trueName = trueNameObj.toString().trim();
-            return trueName.isEmpty() ? null : trueName;
+            return new AccountInfo(
+                    username != null ? username.trim() : "",
+                    trueName.trim());
         } catch (Exception e) {
             log.warn("NurseResolver: failed to query account for editUser={}: {}", accountId, e.getMessage());
             return null;
@@ -208,14 +254,14 @@ public class NurseResolver {
     // Cache management
     // ------------------------------------------------------------------
 
-    private void putCache(String key, String trueName) {
+    private void putCache(String key, String username, String trueName) {
         evictExpired();
 
         if (accountCache.size() >= MAX_CACHE_SIZE) {
             evictOldest();
         }
 
-        accountCache.put(key, new CacheEntry(trueName, System.currentTimeMillis()));
+        accountCache.put(key, new CacheEntry(username, trueName, System.currentTimeMillis()));
     }
 
     /** Remove all entries older than CACHE_TTL_MS. */
@@ -254,16 +300,29 @@ public class NurseResolver {
     // ------------------------------------------------------------------
 
     static class CacheEntry {
+        final String username;
         final String trueName;
         final long timestamp;
 
-        CacheEntry(String trueName, long timestamp) {
+        CacheEntry(String username, String trueName, long timestamp) {
+            this.username = username;
             this.trueName = trueName;
             this.timestamp = timestamp;
         }
 
         boolean isExpired() {
             return (System.currentTimeMillis() - timestamp) > CACHE_TTL_MS;
+        }
+    }
+
+    /** Account lookup result */
+    static class AccountInfo {
+        final String username;
+        final String trueName;
+
+        AccountInfo(String username, String trueName) {
+            this.username = username;
+            this.trueName = trueName;
         }
     }
 }

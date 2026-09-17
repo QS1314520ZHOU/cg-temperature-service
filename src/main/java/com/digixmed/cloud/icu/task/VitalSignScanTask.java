@@ -5,8 +5,6 @@ import com.digixmed.cloud.icu.model.ClinicalTimeWindow;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.service.ClinicalTimeWindowService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService;
-import com.digixmed.cloud.icu.service.HeightWeightNurseService.NurseRef;
 import com.digixmed.cloud.icu.service.IntermediateService;
 import com.digixmed.cloud.icu.util.PayloadTimeNormalizer;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
@@ -79,9 +77,13 @@ public class VitalSignScanTask {
     @Value("${vitalsign.patient.ward-code:125011}")
     private String wardCode;
 
-    /** 标准时间点回看小时数，覆盖跨天补录 */
-    @Value("${vitalsign.scan.lookback-hours:26}")
+    /** 活跃时段回看小时数（02/06/10/14/18/22点，每3分钟执行） */
+    @Value("${vitalsign.scan.lookback-hours:14}")
     private int scanLookbackHours;
+
+    /** 非活跃时段回看小时数（其他时间，每30分钟执行） */
+    @Value("${vitalsign.scan.inactive-lookback-hours:168}")
+    private int inactiveLookbackHours;
 
     /** 血压 07:00 槽位回看天数 */
     @Value("${vitalsign.scan.bp-lookback-days:1}")
@@ -105,9 +107,6 @@ public class VitalSignScanTask {
 
     @Autowired
     private IntermediateService intermediateService;
-
-    @Autowired
-    private HeightWeightNurseService heightWeightNurseService;
 
     @Autowired
     private TemperatureHandler temperatureHandler;
@@ -175,9 +174,12 @@ public class VitalSignScanTask {
         log.info("STEP_01_PATIENT_SELECTED traceId={} 开始普通体征扫描 now={}", traceId, now);
 
         try {
-            List<LocalDateTime> scanPoints = timeWindowService.getScanTimePoints(now, scanLookbackHours);
-            log.info("STEP_02_WINDOW_CREATED traceId={} 回看{}小时，需扫描标准时间点数量={} 时间点={}",
-                    traceId, scanLookbackHours, scanPoints.size(), scanPoints);
+            // 活跃时段用短回看，非活跃时段用长回看
+            boolean isActive = ACTIVE_HOURS.contains(now.getHour());
+            int lookback = isActive ? scanLookbackHours : inactiveLookbackHours;
+            List<LocalDateTime> scanPoints = timeWindowService.getScanTimePoints(now, lookback);
+            log.info("STEP_02_WINDOW_CREATED traceId={} {}时段 回看{}小时，需扫描标准时间点数量={} 时间点={}",
+                    traceId, isActive ? "活跃" : "非活跃", lookback, scanPoints.size(), scanPoints);
 
             // 批量收集所有时间点的候选pid（一次查询，而非每个时间点单独查）
             List<String> vitalCodes = Arrays.asList(
@@ -247,7 +249,7 @@ public class VitalSignScanTask {
                 continue;
             }
             String pid = id.toString();
-            processAdmissionVitalSigns(pid, patient, now, traceId);
+            processAdmissionVitalSigns(pid, patient, now, traceId, false);
         }
     }
 
@@ -272,7 +274,7 @@ public class VitalSignScanTask {
         if (processPulse(traceId, mongoPid, patient, point, null)) count++;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_HEART_RATE, heartRateHandler, null)) count++;
         if (processVitalSign(traceId, mongoPid, patient, point, CODE_BREATH, breathHandler, null)) count++;
-        if (processVitalSign(traceId, mongoPid, patient, point, CODE_PAIN, painScoreHandler, null)) count++;
+        if (processPainScore(traceId, mongoPid, patient, point, null)) count++;
         return count;
     }
 
@@ -290,7 +292,7 @@ public class VitalSignScanTask {
             processPulse(patientTraceId, pid, patient, planTime, window);
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_HEART_RATE, heartRateHandler, window);
             processVitalSign(patientTraceId, pid, patient, planTime, CODE_BREATH, breathHandler, window);
-            processVitalSign(patientTraceId, pid, patient, planTime, CODE_PAIN, painScoreHandler, window);
+            processPainScore(patientTraceId, pid, patient, planTime, window);
         } catch (Exception e) {
             log.error("STEP_12_PUSH_STATUS_UPDATED traceId={} patientId={} 处理异常",
                     patientTraceId, patientIdMasked, e);
@@ -302,7 +304,7 @@ public class VitalSignScanTask {
      *
      * 身高体重的记录者必须与本次体温的记录者一致，因此：
      *   1. 先处理体温并拿到 payload；
-     *   2. 用体温 payload 的记录者调用 HeightWeightNurseService.pin 原子锁定；
+     *   2. 从 patient.responsibleNurse 解析记录者；
      *   3. 用锁定结果构建身高体重。
      * 若本次没有体温记录，则不回传身高体重（等体温出现后的下一轮再一起回传），
      * 以保证"身高体重的记录者与对应体温一致"这一约束不被破坏。
@@ -331,7 +333,7 @@ public class VitalSignScanTask {
                 Query.query(Criteria.where("mongoPid").is(mongoPid)),
                 IntermediateService.PUSH_COLLECTION);
 
-        processAdmissionVitalSigns(mongoPid, patient, timeWindowService.now(), traceId);
+        processAdmissionVitalSigns(mongoPid, patient, timeWindowService.now(), traceId, true);
 
         // 查询执行后的记录数，差值即为本次新增/更新的条数
         long after = mongoTemplate.count(
@@ -341,7 +343,7 @@ public class VitalSignScanTask {
         return (int) (after - before);
     }
 
-    private void processAdmissionVitalSigns(String pid, Document patient, LocalDateTime now, String traceId) {
+    private void processAdmissionVitalSigns(String pid, Document patient, LocalDateTime now, String traceId, boolean skipLookback) {
         Date icuAdmissionTime = getValueFromDocByKey(patient, "icuAdmissionTime", Date.class);
         if (icuAdmissionTime == null) {
             log.debug("ADMISSION_VITALS traceId={} pid={} 无icuAdmissionTime，跳过入科扫描", traceId, pid);
@@ -350,11 +352,14 @@ public class VitalSignScanTask {
 
         LocalDateTime admissionDateTime = icuAdmissionTime.toInstant().atZone(ZONE).toLocalDateTime();
         LocalDate admissionDate = admissionDateTime.toLocalDate();
-        LocalDate earliest = now.toLocalDate().minusDays(Math.max(admissionLookbackDays, 0));
 
-        if (admissionDate.isBefore(earliest) || admissionDate.isAfter(now.toLocalDate())) {
-            log.debug("ADMISSION_VITALS traceId={} pid={} 入科日期={} 不在回看范围内，跳过", traceId, pid, admissionDate);
-            return;
+        if (!skipLookback) {
+            LocalDate earliest = now.toLocalDate().minusDays(Math.max(admissionLookbackDays, 0));
+
+            if (admissionDate.isBefore(earliest) || admissionDate.isAfter(now.toLocalDate())) {
+                log.debug("ADMISSION_VITALS traceId={} pid={} 入科日期={} 不在回看范围内，跳过", traceId, pid, admissionDate);
+                return;
+            }
         }
 
         // 入科时刻所属标准点（用于 handler 内部窗口构建）
@@ -386,26 +391,17 @@ public class VitalSignScanTask {
         processAdmissionVitalSign(
                 patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
                 CODE_BREATH, breathHandler, window);
-        processAdmissionVitalSign(
-                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime,
-                CODE_PAIN, painScoreHandler, window);
+        processAdmissionPainScore(
+                patientTraceId, pid, patient, admissionDateTime, admissionPlanTime, window);
 
         // 1.1 入科血压：查入科时间点的收缩压+舒张压，成对才回传
         processAdmissionBloodPressure(patientTraceId, pid, patient, admissionDateTime, window);
 
         // 2. 身高体重（与体温解耦：体温缺失不阻断身高体重）
-        if (tempPayload == null) {
-            log.info("ADMISSION_VITALS traceId={} pid={} 本次无体温记录，身高体重将使用默认记录者", patientTraceId, pid);
-        }
-
-        // 3. 锁定记录者并处理身高体重（R2: planTime=recordTime=icuAdmissionTime）
-        String nurseId = tempPayload != null ? tempPayload.getRecordNurseId() : null;
-        String nurseName = tempPayload != null ? tempPayload.getRecordNurseName() : null;
-        NurseRef nurse = heightWeightNurseService.pin(pid, nurseId, nurseName, "ADMISSION");
-        // R2: planTime=recordTime=admissionDateTime（不可变时间点），不锚定 07:00
+        // planTime=recordTime=admissionDateTime（入科时间本身），不锚定 07:00
         try {
             List<VitalSignPayload> hwPayloads = heightWeightHandler.buildAdmissionFirst(
-                    patient, admissionDateTime, nurse, patientTraceId);
+                    patient, admissionDateTime, patientTraceId);
             for (VitalSignPayload hwPayload : hwPayloads) {
                 intermediateService.upsertPending(hwPayload, patientTraceId);
                 log.info("ADMISSION_VITALS traceId={} pid={} {}={} planTime={} 入科身高体重回传完成",
@@ -487,6 +483,114 @@ public class VitalSignScanTask {
         PayloadTimeNormalizer.anchor(payload, planTime);
         intermediateService.upsertPending(payload, patientTraceId);
         return true;
+    }
+
+    /**
+     * 采集疼痛评分：查 (前一时间点, 当前时间点] 范围内最新一条
+     *
+     * 时间范围：
+     *   02:00 → (前一天22:00, 02:00]
+     *   06:00 → (02:00, 06:00]
+     *   10:00 → (06:00, 10:00]
+     *   14:00 → (10:00, 14:00]
+     *   18:00 → (14:00, 18:00]
+     *   22:00 → (18:00, 22:00]
+     *
+     * @return 是否登记了一条待推送记录
+     */
+    private boolean processPainScore(String patientTraceId, String pid,
+                                     Document patient, LocalDateTime planTime, ClinicalTimeWindow window) {
+        try {
+            LocalDateTime prevHour = previousStandardHour(planTime);
+            Date startTime = Date.from(prevHour.atZone(ZONE).toInstant());
+            Date endTime = Date.from(planTime.atZone(ZONE).toInstant());
+
+            log.info("PAIN_SCORE traceId={} pid={} 查询范围=({}, {}]",
+                    patientTraceId, pid, prevHour, planTime);
+
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(CODE_PAIN)
+                    .and("valid").ne(false).ne(0)
+                    .and("time").gt(startTime).lte(endTime))
+                    .with(Sort.by(Sort.Direction.DESC, "time")
+                            .and(Sort.by(Sort.Direction.DESC, "editTime")))
+                    .limit(1);
+
+            Document bedside = filterValidRecord(mongoTemplate.findOne(query, Document.class, BEDSIDE));
+            if (bedside == null) {
+                log.info("PAIN_SCORE traceId={} pid={} 范围内无疼痛评分数据", patientTraceId, pid);
+                return false;
+            }
+
+            log.info("PAIN_SCORE traceId={} pid={} 找到记录: time={}", patientTraceId, pid, bedside.get("time"));
+
+            VitalSignPayload payload = painScoreHandler.handle(bedside, patient, planTime, patientTraceId);
+            if (payload != null) {
+                PayloadTimeNormalizer.anchor(payload, planTime);
+                intermediateService.upsertPending(payload, patientTraceId);
+                return true;
+            }
+        } catch (Exception e) {
+            log.error("PAIN_SCORE traceId={} pid={} 处理异常", patientTraceId, pid, e);
+        }
+        return false;
+    }
+
+    /**
+     * 入科疼痛评分：查 (前一时间点, 入科时间] 范围内最新一条
+     */
+    private void processAdmissionPainScore(String patientTraceId, String pid,
+                                            Document patient, LocalDateTime admissionDateTime,
+                                            LocalDateTime standardPoint, ClinicalTimeWindow window) {
+        try {
+            LocalDateTime prevHour = previousStandardHour(standardPoint);
+            Date startTime = Date.from(prevHour.atZone(ZONE).toInstant());
+            Date endTime = Date.from(admissionDateTime.atZone(ZONE).toInstant());
+
+            log.info("ADMISSION_PAIN traceId={} pid={} 查询范围=({}, {}]",
+                    patientTraceId, pid, prevHour, admissionDateTime);
+
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(CODE_PAIN)
+                    .and("valid").ne(false).ne(0)
+                    .and("time").gt(startTime).lte(endTime))
+                    .with(Sort.by(Sort.Direction.DESC, "time")
+                            .and(Sort.by(Sort.Direction.DESC, "editTime")))
+                    .limit(1);
+
+            Document bedside = filterValidRecord(mongoTemplate.findOne(query, Document.class, BEDSIDE));
+            if (bedside == null) {
+                log.info("ADMISSION_PAIN traceId={} pid={} 范围内无疼痛评分数据", patientTraceId, pid);
+                return;
+            }
+
+            VitalSignPayload payload = painScoreHandler.handle(bedside, patient, standardPoint, patientTraceId);
+            if (payload != null) {
+                payload.setPlanTime(admissionDateTime);
+                payload.setRecordTime(admissionDateTime);
+                intermediateService.upsertPending(payload, patientTraceId);
+            }
+        } catch (Exception e) {
+            log.error("ADMISSION_PAIN traceId={} pid={} 处理异常", patientTraceId, pid, e);
+        }
+    }
+
+    /**
+     * 获取前一个标准时间点
+     *
+     * 02→前一天22, 06→02, 10→06, 14→10, 18→14, 22→18
+     */
+    private LocalDateTime previousStandardHour(LocalDateTime point) {
+        int hour = point.getHour();
+        switch (hour) {
+            case 2:  return point.minusDays(1).withHour(22).withMinute(0).withSecond(0).withNano(0);
+            case 6:  return point.withHour(2).withMinute(0).withSecond(0).withNano(0);
+            case 10: return point.withHour(6).withMinute(0).withSecond(0).withNano(0);
+            case 14: return point.withHour(10).withMinute(0).withSecond(0).withNano(0);
+            case 18: return point.withHour(14).withMinute(0).withSecond(0).withNano(0);
+            case 22: return point.withHour(18).withMinute(0).withSecond(0).withNano(0);
+            default: return point.withMinute(0).withSecond(0).withNano(0).minusHours(4);
+        }
     }
 
     private boolean processVitalSign(String patientTraceId, String pid, Document patient,
@@ -630,22 +734,32 @@ public class VitalSignScanTask {
                 return;
             }
 
-            VitalSignPayload payload = VitalSignPayload.builder()
-                    .vitalsignName("血压")
-                    .vitalsignType("1005")
-                    .vitalsignNVal1(systolic)
-                    .vitalsignNVal2(diastolic)
-                    .unit("mmHg")
-                    .build();
+            VitalSignPayload payload;
+            if (isNumericValue(systolic) && isNumericValue(diastolic)) {
+                // 数字类型：回传到 vitalsignNVal1 和 vitalsignNVal2
+                payload = VitalSignPayload.builder()
+                        .vitalsignName("血压")
+                        .vitalsignType("1005")
+                        .vitalsignNVal1(systolic)
+                        .vitalsignNVal2(diastolic)
+                        .unit("mmHg")
+                        .build();
+            } else {
+                // 字符串类型：回传到 vitalsignSVal2
+                payload = VitalSignPayload.builder()
+                        .vitalsignName("血压")
+                        .vitalsignType("1005")
+                        .vitalsignSVal2(systolic)
+                        .unit("mmHg")
+                        .build();
+            }
 
             // 设置患者身份和记录者
             payload.setPatientId(patientIdentityMapper.getPatientId(patient));
             payload.setMrn(patientIdentityMapper.getMrn(patient));
             payload.setPatientName(patientIdentityMapper.getPatientName(patient));
-            payload.setSeries(patientIdentityMapper.getSeries());
+            payload.setSeries(patientIdentityMapper.getSeries(patient));
             payload.setWardCode(patientIdentityMapper.getWardCode());
-            payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
-            payload.setRecordNurseName("陈琳");
             payload.setIsValid(1);
             payload.setRemark("");
             payload.setTraceId(patientTraceId);
@@ -655,12 +769,99 @@ public class VitalSignScanTask {
             payload.setPlanTime(admissionDateTime);
             payload.setRecordTime(admissionDateTime);
 
+            // 护士解析：param_Yishi at 入科时间 → responsibleNurse → 默认
+            resolveNurseForAdmissionBP(payload, pid, patient, admissionDateTime, patientTraceId);
+
             intermediateService.upsertPending(payload, patientTraceId);
-            log.info("ADMISSION_BP traceId={} pid={} 血压={}/{} planTime={} 入科血压回传完成",
-                    patientTraceId, pid, systolic, diastolic, admissionDateTime);
+            log.info("ADMISSION_BP traceId={} pid={} 血压={}/{} planTime={} nurseId={} nurseName={} 入科血压回传完成",
+                    patientTraceId, pid, systolic, diastolic, admissionDateTime,
+                    payload.getRecordNurseId(), payload.getRecordNurseName());
         } catch (Exception e) {
             log.error("ADMISSION_BP traceId={} pid={} 入科血压处理异常", patientTraceId, pid, e);
         }
+    }
+
+    /**
+     * 入科血压护士解析：param_Yishi at 入科时间 → responsibleNurse → 默认
+     *
+     * 入科血压的 planTime 是入科时间（如 10:32），护士应在入科时间附近查找，
+     * 而非 07:00 标准时间点。
+     */
+    private void resolveNurseForAdmissionBP(VitalSignPayload payload, String pid,
+                                             Document patient, LocalDateTime admissionTime, String traceId) {
+        Date searchTime = Date.from(admissionTime.atZone(ZONE).toInstant());
+
+        // 1. param_Yishi at 入科时间
+        try {
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false).ne(0)
+                    .and("time").is(searchTime));
+            Document yishiDoc = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
+            if (yishiDoc != null) {
+                Object editUserObj = yishiDoc.get("editUser");
+                if (editUserObj != null) {
+                    String editUser = editUserObj.toString().trim();
+                    if (!editUser.isEmpty()) {
+                        try {
+                            org.bson.types.ObjectId accountId = new org.bson.types.ObjectId(editUser);
+                            Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+                            Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                            if (account != null) {
+                                String username = account.getString("username");
+                                String trueName = account.getString("trueName");
+                                if (trueName != null && !trueName.trim().isEmpty()) {
+                                    payload.setRecordNurseId(username != null ? username.trim() : "");
+                                    payload.setRecordNurseName(trueName.trim());
+                                    log.info("ADMISSION_BP_NURSE traceId={} pid={} nurseId={} nurseName={} source=param_Yishi",
+                                            traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                                    return;
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn("ADMISSION_BP_NURSE traceId={} pid={} 查询account失败: {}", traceId, pid, e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("ADMISSION_BP_NURSE traceId={} pid={} 查询param_Yishi异常: {}", traceId, pid, e.getMessage());
+        }
+
+        // 2. responsibleNurse
+        Object responsibleObj = patient.get("responsibleNurse");
+        if (responsibleObj != null) {
+            String responsibleName = responsibleObj.toString().trim();
+            if (!responsibleName.isEmpty()) {
+                try {
+                    Query query = new Query(Criteria.where("trueName").is(responsibleName)).limit(1);
+                    Document account = mongoTemplate.findOne(query, Document.class, "account");
+                    if (account != null) {
+                        String username = account.getString("username");
+                        if (username != null && !username.trim().isEmpty()) {
+                            payload.setRecordNurseId(username.trim());
+                            payload.setRecordNurseName(responsibleName);
+                            log.info("ADMISSION_BP_NURSE traceId={} pid={} nurseId={} nurseName={} source=responsibleNurse",
+                                    traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                            return;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("ADMISSION_BP_NURSE traceId={} pid={} responsibleNurse查询异常: {}", traceId, pid, e.getMessage());
+                }
+            }
+        }
+
+        // 3. 默认
+        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+        payload.setRecordNurseName("陈琳");
+        log.info("ADMISSION_BP_NURSE traceId={} pid={} 所有解析方式均失败，使用默认值", traceId, pid);
     }
 
     /**
@@ -817,5 +1018,20 @@ public class VitalSignScanTask {
             return null;
         }
         return doc;
+    }
+
+    /**
+     * 检查字符串是否为数字类型
+     */
+    private boolean isNumericValue(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        try {
+            Double.parseDouble(value);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 }

@@ -305,12 +305,15 @@ public class ClinicalTimeWindowService {
      * 逻辑：
      *   1. admissionBaseDate = admissionWardTime.toLocalDate()
      *   2. todayDate = now 在 Asia/Shanghai 的日期
-     *   3. actualReportDate = min(todayDate, reportDate)（不超前）
-     *   4. pageDayIndex = DAYS.between(admissionBaseDate, actualReportDate)
-     *   5. pageDayIndex > 0 && pageDayIndex % pageDays == 0 → 返回 actualReportDate sendHour:00
+     *   3. pageDayIndex = DAYS.between(admissionBaseDate, todayDate)（始终基于今天计算）
+     *   4. pageDayIndex > 0 && pageDayIndex % pageDays == 0 → 返回 todayDate sendHour:00
+     *
+     * 注意：身高体重的周期判断必须基于今天，不能基于 reportDate。
+     *       因为 DailySummaryTask 只处理昨天及以前的报表日，
+     *       如果基于 reportDate 计算，会导致周期性回传延迟一天。
      *
      * @param admissionWardTime admission_ward_time（KingBase）
-     * @param reportDate        报表日期
+     * @param reportDate        报表日期（未使用，保留接口兼容）
      * @param now               当前时间
      * @return 发送时间（仅在应该发送时返回）
      */
@@ -323,19 +326,19 @@ public class ClinicalTimeWindowService {
 
         LocalDate admissionBaseDate = admissionWardTime.toLocalDate();
         LocalDate todayDate = now.atZone(ZONE_SHANGHAI).toLocalDate();
-        LocalDate actualReportDate = todayDate.isBefore(reportDate) ? todayDate : reportDate;
 
-        long pageDayIndex = ChronoUnit.DAYS.between(admissionBaseDate, actualReportDate);
+        // 身高体重周期判断始终基于今天，确保周期性回传不延迟
+        long pageDayIndex = ChronoUnit.DAYS.between(admissionBaseDate, todayDate);
 
         if (pageDayIndex <= 0 || pageDayIndex % heightWeightPageDays != 0) {
-            log.debug("身高体重不发送: pageDayIndex={} pageDays={} admission={} report={}",
-                    pageDayIndex, heightWeightPageDays, admissionBaseDate, actualReportDate);
+            log.debug("身高体重不发送: pageDayIndex={} pageDays={} admission={} today={}",
+                    pageDayIndex, heightWeightPageDays, admissionBaseDate, todayDate);
             return Optional.empty();
         }
 
-        LocalDateTime sendTime = LocalDateTime.of(actualReportDate, LocalTime.of(heightWeightSendHour, 0, 0));
-        log.info("身高体重计划发送: pageDayIndex={} sendTime={} admission={} report={}",
-                pageDayIndex, sendTime, admissionBaseDate, actualReportDate);
+        LocalDateTime sendTime = LocalDateTime.of(todayDate, LocalTime.of(heightWeightSendHour, 0, 0));
+        log.info("身高体重计划发送: pageDayIndex={} sendTime={} admission={} today={}",
+                pageDayIndex, sendTime, admissionBaseDate, todayDate);
         return Optional.of(sendTime);
     }
 }

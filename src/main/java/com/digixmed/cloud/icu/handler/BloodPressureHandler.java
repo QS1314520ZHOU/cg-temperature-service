@@ -99,16 +99,28 @@ public class BloodPressureHandler extends BaseVitalSignHandler {
             return null;
         }
 
-        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 血压={}/{}",
-                traceId, maskPid(pid), systolic, diastolic);
+        log.info("STEP_04_SOURCE_RECORD_SELECTED traceId={} pid={} 血压={}/{} isNumeric={}",
+                traceId, maskPid(pid), systolic, diastolic, pair.isNumericSystolic());
 
-        VitalSignPayload payload = VitalSignPayload.builder()
-                .vitalsignName("血压")
-                .vitalsignType("1005")
-                .vitalsignNVal1(pair.getSystolic())
-                .vitalsignNVal2(pair.getDiastolic())
-                .unit("mmHg")
-                .build();
+        VitalSignPayload payload;
+        if (pair.isNumericSystolic() && pair.isNumericDiastolic()) {
+            // 数字类型：回传到 vitalsignNVal1 和 vitalsignNVal2
+            payload = VitalSignPayload.builder()
+                    .vitalsignName("血压")
+                    .vitalsignType("1005")
+                    .vitalsignNVal1(pair.getSystolic())
+                    .vitalsignNVal2(pair.getDiastolic())
+                    .unit("mmHg")
+                    .build();
+        } else {
+            // 字符串类型：回传到 vitalsignSVal2
+            payload = VitalSignPayload.builder()
+                    .vitalsignName("血压")
+                    .vitalsignType("1005")
+                    .vitalsignSVal2(systolic)
+                    .unit("mmHg")
+                    .build();
+        }
 
         // recordTime 取收缩压记录的 bedside.time；planTime 由任务层用 PayloadTimeNormalizer 锚定为 07:00
         fillCommonFields(payload, patient, systolicDoc, mongoTemplate, traceId);

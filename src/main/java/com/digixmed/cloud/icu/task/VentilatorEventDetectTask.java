@@ -291,10 +291,12 @@ public class VentilatorEventDetectTask {
         payload.setPatientId(patientId);
         payload.setMrn(patientIdentityMapper.getMrn(patient));
         payload.setPatientName(patientIdentityMapper.getPatientName(patient));
-        payload.setSeries(patientIdentityMapper.getSeries());
+        payload.setSeries(patientIdentityMapper.getSeries(patient));
         payload.setWardCode(patientIdentityMapper.getWardCode());
-        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
-        payload.setRecordNurseName("陈琳");
+
+        // 护士解析：param_Yishi → editUser → responsibleNurse → 默认
+        resolveEventNurse(payload, event.pid, event.eventTime, patient, traceId);
+
         payload.setIsValid(1);
         payload.setRemark("");
         payload.setTraceId(patientTraceId);
@@ -303,6 +305,86 @@ public class VentilatorEventDetectTask {
         intermediateService.upsertPending(payload, patientTraceId);
         log.info("VENTILATOR_DETECT traceId={} pid={} 事件={} planTime={} 已入队",
                 patientTraceId, event.pid, event.type, event.eventTime);
+    }
+
+    /**
+     * 呼吸机事件护士解析：param_Yishi → editUser → responsibleNurse → 默认
+     */
+    private void resolveEventNurse(VitalSignPayload payload, String pid, LocalDateTime eventTime,
+                                    Document patient, String traceId) {
+        Date eventDate = Date.from(eventTime.atZone(ZONE).toInstant());
+
+        // 1. param_Yishi at eventTime
+        try {
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false).ne(0)
+                    .and("time").is(eventDate));
+            Document yishiDoc = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
+            if (yishiDoc != null) {
+                Object editUserObj = yishiDoc.get("editUser");
+                if (editUserObj != null) {
+                    String editUser = editUserObj.toString().trim();
+                    if (!editUser.isEmpty()) {
+                        try {
+                            ObjectId accountId = new ObjectId(editUser);
+                            Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+                            Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                            if (account != null) {
+                                String username = account.getString("username");
+                                String trueName = account.getString("trueName");
+                                if (trueName != null && !trueName.trim().isEmpty()) {
+                                    payload.setRecordNurseId(username != null ? username.trim() : "");
+                                    payload.setRecordNurseName(trueName.trim());
+                                    log.info("VENTILATOR_NURSE traceId={} pid={} nurseId={} nurseName={} source=param_Yishi",
+                                            traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                                    return;
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn("VENTILATOR_NURSE traceId={} pid={} 查询account失败: {}", traceId, pid, e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("VENTILATOR_NURSE traceId={} pid={} 查询param_Yishi异常: {}", traceId, pid, e.getMessage());
+        }
+
+        // 2. responsibleNurse
+        Object responsibleObj = patient.get("responsibleNurse");
+        if (responsibleObj != null) {
+            String responsibleName = responsibleObj.toString().trim();
+            if (!responsibleName.isEmpty()) {
+                try {
+                    Query query = new Query(Criteria.where("trueName").is(responsibleName)).limit(1);
+                    Document account = mongoTemplate.findOne(query, Document.class, "account");
+                    if (account != null) {
+                        String username = account.getString("username");
+                        if (username != null && !username.trim().isEmpty()) {
+                            payload.setRecordNurseId(username.trim());
+                            payload.setRecordNurseName(responsibleName);
+                            log.info("VENTILATOR_NURSE traceId={} pid={} nurseId={} nurseName={} source=responsibleNurse",
+                                    traceId, pid, payload.getRecordNurseId(), payload.getRecordNurseName());
+                            return;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("VENTILATOR_NURSE traceId={} pid={} responsibleNurse查询异常: {}", traceId, pid, e.getMessage());
+                }
+            }
+        }
+
+        // 3. 默认
+        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+        payload.setRecordNurseName("陈琳");
+        log.info("VENTILATOR_NURSE traceId={} pid={} 所有解析方式均失败，使用默认值", traceId, pid);
     }
 
     private Map<String, Document> findPatientsByPids(java.util.List<ObjectId> ids) {

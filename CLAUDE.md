@@ -1111,3 +1111,83 @@ if (mrn != null) {
 - 入科时间 < windowEnd → 纳入
 - 出科时间 < windowEnd → 过滤掉（出科当天不回传出入量）
 - 出科时间 >= windowEnd → 纳入（还没出科）
+
+---
+
+### 2026-09-04：修改入科第一条身高体重的planTime逻辑
+
+**需求**：
+入科第一条身高体重数据使用入科时间作为planTime（而不是入科时间+1小时）
+
+**修改前**：
+- 身高体重planTime = icuAdmissionTime + 1小时
+- 例如：入科时间23:13 → planTime = 00:13（次日）
+
+**修改后**：
+- 身高体重planTime = icuAdmissionTime（入科时间本身）
+- 例如：入科时间23:13 → planTime = 23:13
+
+**修改文件**：
+1. `HeightWeightHandler.java`：`buildAdmissionFirst` 方法
+2. `VitalSignScanTask.java`：更新注释
+
+**修改内容**：
+```java
+// 修改前（错误）：
+LocalDateTime sendTime = admissionDateTime.plusHours(1);
+
+// 修改后（正确）：
+LocalDateTime sendTime = admissionDateTime;
+```
+
+**影响范围**：
+- 入科第一条身高体重回传：planTime从icuAdmissionTime+1小时改为icuAdmissionTime
+- 周期性身高体重回传（7天周期）：使用当天07:00作为planTime，不受影响
+
+**行为变化**：
+- 修改前：入科时间23:13 → planTime = 00:13（次日）
+- 修改后：入科时间23:13 → planTime = 23:13
+
+---
+
+### 2026-09-04：修改入科时间调整逻辑，支持非整点入科
+
+**需求**：
+系统按整点记录数据（如09:00-10:00的数据记录在09点），如果入科时间是非整点（如09:32），需要将startDate调整为入科时间所在的整点（09:00），确保入科时间所在整点的数据能被计算。
+
+**修改前**：
+- startDate调整为入科时间本身
+- 例如：入科时间09:32 → startDate = 09:32
+- 结果：09:00这个整点的数据不被计算（因为09:00 < 09:32）
+
+**修改后**：
+- startDate调整为入科时间所在的整点（向下取整）
+- 例如：入科时间09:32 → startDate = 09:00
+- 结果：09:00这个整点的数据被计算（因为09:00 >= 09:00）
+
+**修改文件**：
+1. `DailySummaryTask.java`：`processPatientSummary` 方法
+
+**修改内容**：
+```java
+// 修改前（错误）：
+Date admissionDateInstant = Date.from(admissionTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+if (admissionDateInstant.after(startDate)) {
+    startDate = admissionDateInstant;
+}
+
+// 修改后（正确）：
+LocalDateTime admissionLocal = admissionTime;
+LocalDateTime roundedTime = admissionLocal.withMinute(0).withSecond(0).withNano(0);
+Date roundedDate = Date.from(roundedTime.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
+if (roundedDate.after(startDate)) {
+    startDate = roundedDate;
+}
+```
+
+**影响范围**：
+- 入科当天的出入量统计：startDate从入科时间调整为入科时间所在的整点
+
+**行为变化**：
+- 修改前：入科时间09:32 → startDate = 09:32 → 09:00的数据不计算
+- 修改后：入科时间09:32 → startDate = 09:00 → 09:00的数据计算

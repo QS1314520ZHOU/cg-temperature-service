@@ -55,14 +55,14 @@ class NurseResolverTest {
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("bedside")))
                 .thenReturn(paramYishiDoc);
 
-        // Mock account query -> returns trueName
-        Document accountDoc = new Document("trueName", "张三");
+        // Mock account query -> returns username + trueName
+        Document accountDoc = new Document("username", "N001").append("trueName", "张三");
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("account")))
                 .thenReturn(accountDoc);
 
         NurseInfo result = nurseResolver.resolve(new Document(), pid, startTime, endTime);
 
-        assertEquals("dba", result.getNurseId());
+        assertEquals("N001", result.getNurseId());
         assertEquals("张三", result.getNurseName());
         assertEquals("param_Yishi", result.getSource());
         assertNull(result.getReasonCode());
@@ -76,8 +76,8 @@ class NurseResolverTest {
         String editUserId = new ObjectId().toString();
 
         // First call (param_Yishi query) -> null (not found)
-        // Second call (account query) -> returns trueName
-        Document accountDoc = new Document("trueName", "李四");
+        // Second call (account query) -> returns username + trueName
+        Document accountDoc = new Document("username", "N002").append("trueName", "李四");
 
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("bedside")))
                 .thenReturn(null); // no param_Yishi
@@ -89,7 +89,7 @@ class NurseResolverTest {
 
         NurseInfo result = nurseResolver.resolve(sourceRecord, pid, startTime, endTime);
 
-        assertEquals("dba", result.getNurseId());
+        assertEquals("N002", result.getNurseId());
         assertEquals("李四", result.getNurseName());
         assertEquals("source_record", result.getSource());
         assertNull(result.getReasonCode());
@@ -114,30 +114,30 @@ class NurseResolverTest {
 
         NurseInfo result = nurseResolver.resolve(sourceRecord, pid, startTime, endTime);
 
-        assertEquals("dba", result.getNurseId());
+        assertEquals("041660", result.getNurseId());
         assertEquals("", result.getNurseName());
         assertEquals("not_found", result.getSource());
         assertEquals("NURSE_NOT_FOUND", result.getReasonCode());
     }
 
     // ------------------------------------------------------------------
-    // Test 4: recordNurseId always "dba"
+    // Test 4: recordNurseId comes from account.username
     // ------------------------------------------------------------------
     @Test
-    void resolve_alwaysReturnsDbaNurseId() {
+    void resolve_returnsAccountUsernameAsNurseId() {
         // param_Yishi found
         String editUserId = new ObjectId().toString();
         Document paramYishiDoc = new Document("editUser", editUserId);
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("bedside")))
                 .thenReturn(paramYishiDoc);
-        Document accountDoc = new Document("trueName", "王五");
+        Document accountDoc = new Document("username", "N003").append("trueName", "王五");
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("account")))
                 .thenReturn(accountDoc);
 
         NurseInfo result = nurseResolver.resolve(new Document(), pid, startTime, endTime);
-        assertEquals("dba", result.getNurseId());
+        assertEquals("N003", result.getNurseId());
 
-        // Also verify not_found case
+        // Also verify not_found case returns default
         nurseResolver.clearCache();
         when(mongoTemplate.findOne(any(Query.class), eq(Document.class), eq("bedside")))
                 .thenReturn(null);
@@ -146,7 +146,7 @@ class NurseResolverTest {
 
         Document sourceRecord = new Document("editUser", editUserId);
         NurseInfo result2 = nurseResolver.resolve(sourceRecord, pid, startTime, endTime);
-        assertEquals("dba", result2.getNurseId());
+        assertEquals("041660", result2.getNurseId());
     }
 
     // ------------------------------------------------------------------
@@ -164,7 +164,7 @@ class NurseResolverTest {
 
         NurseInfo result = nurseResolver.resolve(sourceRecord, pid, startTime, endTime);
 
-        assertEquals("dba", result.getNurseId());
+        assertEquals("041660", result.getNurseId());
         assertEquals("", result.getNurseName());
         assertEquals("not_found", result.getSource());
         assertEquals("NURSE_NOT_FOUND", result.getReasonCode());

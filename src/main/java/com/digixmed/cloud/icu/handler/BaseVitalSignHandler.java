@@ -1,5 +1,6 @@
 package com.digixmed.cloud.icu.handler;
 
+import com.digixmed.cloud.icu.model.NurseInfo;
 import com.digixmed.cloud.icu.model.PatientIdentityMapper;
 import com.digixmed.cloud.icu.model.VitalSignPayload;
 import com.digixmed.cloud.icu.util.TraceIdGenerator;
@@ -7,10 +8,12 @@ import org.bson.Document;
 import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
@@ -64,25 +67,46 @@ public abstract class BaseVitalSignHandler {
      */
     protected void fillCommonFields(VitalSignPayload payload, Document patient, Document bedside,
                                      MongoTemplate mongoTemplate, String traceId) {
+        fillCommonFields(payload, patient, bedside, mongoTemplate, traceId, null);
+    }
+
+    /**
+     * 填充公共字段（支持出入量往前搜索 param_Yishi）
+     *
+     * @param searchBefore 出入量场景传入 window.getEnd()，普通体征传 null
+     */
+    protected void fillCommonFields(VitalSignPayload payload, Document patient, Document bedside,
+                                     MongoTemplate mongoTemplate, String traceId, Date searchBefore) {
         payload.setPatientId(patientIdentityMapper.getPatientId(patient));
         payload.setMrn(patientIdentityMapper.getMrn(patient));
         payload.setPatientName(patientIdentityMapper.getPatientName(patient));
-        payload.setSeries(patientIdentityMapper.getSeries());
+        payload.setSeries(patientIdentityMapper.getSeries(patient));
         payload.setWardCode(patientIdentityMapper.getWardCode());
 
-        // 从 account 动态获取记录者工号和姓名
+        // 解析护士：param_Yishi / editUser / responsibleNurse
         String pid = getValueFromDocByKey(patient, "_id", String.class);
-        Document account = resolveRecordAccount(pid, bedside, mongoTemplate, traceId);
-        if (account != null) {
-            String username = getValueFromDocByKey(account, "username", String.class);
-            String trueName = getValueFromDocByKey(account, "trueName", String.class);
-            payload.setRecordNurseId(username != null ? username : "041660");
-            payload.setRecordNurseName(trueName != null ? trueName : "陈琳");
-            log.info("STEP_07_NURSE traceId={} account resolved username={} trueName={}", traceId, username, trueName);
+        NurseInfo nurseInfo = resolveNurseFromBedside(pid, bedside, mongoTemplate, traceId);
+
+        // 出入量场景：param_Yishi 精确查询失败时，往前搜8小时
+        if (nurseInfo == null && searchBefore != null) {
+            nurseInfo = resolveNurseForIntakeOutput(pid, searchBefore, mongoTemplate, traceId);
+        }
+
+        // 兜底：patient.responsibleNurse
+        if (nurseInfo == null) {
+            nurseInfo = resolveNurseFromResponsible(patient, mongoTemplate, traceId);
+        }
+
+        // 最终兜底
+        if (nurseInfo != null) {
+            payload.setRecordNurseId(nurseInfo.getNurseId());
+            payload.setRecordNurseName(nurseInfo.getNurseName());
+            log.info("STEP_07_NURSE traceId={} nurseId={} nurseName={} source={}",
+                    traceId, nurseInfo.getNurseId(), nurseInfo.getNurseName(), nurseInfo.getSource());
         } else {
-            payload.setRecordNurseId("041660");
+            payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
             payload.setRecordNurseName("陈琳");
-            log.warn("STEP_07_NURSE traceId={} 未找到account记录，使用默认值", traceId);
+            log.warn("STEP_07_NURSE traceId={} 所有解析方式均失败，使用默认值", traceId);
         }
 
         // planTime 和 recordTime 都使用 bedside.time
@@ -109,9 +133,22 @@ public abstract class BaseVitalSignHandler {
         payload.setPatientId(patientIdentityMapper.getPatientId(patient));
         payload.setMrn(patientIdentityMapper.getMrn(patient));
         payload.setPatientName(patientIdentityMapper.getPatientName(patient));
-        payload.setSeries(patientIdentityMapper.getSeries());
+        payload.setSeries(patientIdentityMapper.getSeries(patient));
         payload.setWardCode(patientIdentityMapper.getWardCode());
-        payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+
+        // 解析护士：patient.responsibleNurse 兜底
+        NurseInfo nurseInfo = resolveNurseFromResponsible(patient, null, traceId);
+        if (nurseInfo != null) {
+            payload.setRecordNurseId(nurseInfo.getNurseId());
+            payload.setRecordNurseName(nurseInfo.getNurseName());
+            log.info("STEP_07_NURSE traceId={} nurseId={} nurseName={} source=responsibleNurse",
+                    traceId, nurseInfo.getNurseId(), nurseInfo.getNurseName());
+        } else {
+            payload.setRecordNurseId(patientIdentityMapper.getRecordNurseId());
+            payload.setRecordNurseName("陈琳");
+            log.warn("STEP_07_NURSE traceId={} responsibleNurse解析失败，使用默认值", traceId);
+        }
+
         payload.setPlanTime(planTime);
         payload.setRecordTime(planTime);
         payload.setRemark("");
@@ -158,20 +195,18 @@ public abstract class BaseVitalSignHandler {
     }
 
     /**
-     * 解析记录者的 account 文档
+     * 从 bedside 记录解析护士
      *
-     * 查找顺序：
-     *   1. bedside 中 code=param_Yishi 同时刻的 editUser
-     *   2. 当前 bedside 记录的 editUser
-     *   3. editUser (ObjectId) → 查 account 集合
+     * 优先级：
+     *   1. param_Yishi 同时间的 editUser → 查 account
+     *   2. 当前 bedside 记录的 editUser → 查 account
      *
-     * @return account 文档，未找到返回 null
+     * @return NurseInfo，未找到返回 null
      */
-    protected Document resolveRecordAccount(String pid, Document bedside, MongoTemplate mongoTemplate, String traceId) {
-        String editUser = null;
+    protected NurseInfo resolveNurseFromBedside(String pid, Document bedside, MongoTemplate mongoTemplate, String traceId) {
+        Date bedsideTime = getValueFromDocByKey(bedside, "time", Date.class);
 
         // 1. 优先查询 param_Yishi 的 editUser
-        Date bedsideTime = getValueFromDocByKey(bedside, "time", Date.class);
         if (bedsideTime != null && pid != null) {
             Query yishiQuery = new Query(Criteria.where("pid").is(pid)
                     .and("code").is("param_Yishi")
@@ -185,31 +220,143 @@ public abstract class BaseVitalSignHandler {
                 }
             }
             if (yishiDoc != null) {
-                editUser = readEditUserValue(yishiDoc);
-                log.info("STEP_07_NURSE traceId={} 从param_Yishi获取editUser={}", traceId, editUser);
+                String editUser = readEditUserValue(yishiDoc);
+                if (editUser != null && !editUser.isEmpty()) {
+                    NurseInfo info = lookupNurseFromEditUser(editUser, mongoTemplate, "param_Yishi", traceId);
+                    if (info != null) {
+                        return info;
+                    }
+                }
             }
         }
 
-        // 2. 如果没有 param_Yishi，从当前记录获取 editUser
-        if (editUser == null || editUser.isEmpty()) {
-            editUser = readEditUserValue(bedside);
-            log.info("STEP_07_NURSE traceId={} 从当前记录获取editUser={}", traceId, editUser);
+        // 2. 从当前 bedside 记录的 editUser
+        String editUser = readEditUserValue(bedside);
+        if (editUser != null && !editUser.isEmpty()) {
+            NurseInfo info = lookupNurseFromEditUser(editUser, mongoTemplate, "source_record", traceId);
+            if (info != null) {
+                return info;
+            }
         }
 
-        // 3. 根据 editUser 查询 account
-        if (editUser != null && !editUser.isEmpty()) {
+        return null;
+    }
+
+    /**
+     * 出入量场景：从 param_Yishi 往前搜索护士（最多8小时）
+     *
+     * @param pid          患者 MongoDB _id
+     * @param searchBefore 搜索起点（通常为 window.getEnd()）
+     * @return NurseInfo，未找到返回 null
+     */
+    protected NurseInfo resolveNurseForIntakeOutput(String pid, Date searchBefore, MongoTemplate mongoTemplate, String traceId) {
+        if (pid == null || searchBefore == null) {
+            return null;
+        }
+
+        Date searchStart = Date.from(searchBefore.toInstant().minus(Duration.ofHours(8)));
+        log.info("STEP_07_NURSE traceId={} 出入量往前搜索 param_Yishi pid={} range=[{}, {}]",
+                traceId, pid, searchStart, searchBefore);
+
+        try {
+            Query query = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is("param_Yishi")
+                    .and("valid").ne(false).ne(0)
+                    .and("time").gte(searchStart).lt(searchBefore))
+                    .with(Sort.by(Sort.Direction.DESC, "time"))
+                    .limit(1);
+            Document yishiDoc = mongoTemplate.findOne(query, Document.class, "bedside");
+            if (yishiDoc != null) {
+                Object valid = yishiDoc.get("valid");
+                if (Boolean.FALSE.equals(valid) || Integer.valueOf(0).equals(valid)) {
+                    yishiDoc = null;
+                }
+            }
+            if (yishiDoc != null) {
+                String editUser = readEditUserValue(yishiDoc);
+                if (editUser != null && !editUser.isEmpty()) {
+                    NurseInfo info = lookupNurseFromEditUser(editUser, mongoTemplate, "intake_output_yishi", traceId);
+                    if (info != null) {
+                        return info;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("STEP_07_NURSE traceId={} 出入量搜索 param_Yishi 异常: {}", traceId, e.getMessage());
+        }
+
+        log.info("STEP_07_NURSE traceId={} 出入量往前搜索 param_Yishi 未找到", traceId);
+        return null;
+    }
+
+    /**
+     * 从 patient.responsibleNurse 解析护士
+     *
+     * @return NurseInfo，未找到返回 null
+     */
+    protected NurseInfo resolveNurseFromResponsible(Document patient, MongoTemplate mongoTemplate, String traceId) {
+        Object responsibleObj = patient != null ? patient.get("responsibleNurse") : null;
+        if (responsibleObj == null) {
+            return null;
+        }
+        String responsibleName = responsibleObj.toString().trim();
+        if (responsibleName.isEmpty()) {
+            return null;
+        }
+
+        log.info("STEP_07_NURSE traceId={} 尝试从 patient.responsibleNurse={} 解析", traceId, responsibleName);
+
+        // 按 trueName 查 account 集合
+        if (mongoTemplate != null) {
             try {
-                ObjectId accountId = new ObjectId(editUser);
-                Query accountQuery = new Query(Criteria.where("_id").is(accountId));
-                Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+                Query query = new Query(Criteria.where("trueName").is(responsibleName)).limit(1);
+                Document account = mongoTemplate.findOne(query, Document.class, "account");
                 if (account != null) {
-                    return account;
+                    String username = account.getString("username");
+                    if (username != null && !username.trim().isEmpty()) {
+                        NurseInfo info = NurseInfo.builder()
+                                .nurseId(username.trim())
+                                .nurseName(responsibleName)
+                                .source("responsibleNurse")
+                                .reasonCode(null)
+                                .build();
+                        log.info("STEP_07_NURSE traceId={} responsibleNurse解析成功 nurseId={} nurseName={}",
+                                traceId, info.getNurseId(), info.getNurseName());
+                        return info;
+                    }
                 }
             } catch (Exception e) {
-                log.warn("STEP_07_NURSE traceId={} 查询account失败 editUser={}: {}", traceId, editUser, e.getMessage());
+                log.warn("STEP_07_NURSE traceId={} responsibleNurse查询account异常: {}", traceId, e.getMessage());
             }
         }
 
+        log.info("STEP_07_NURSE traceId={} responsibleNurse解析失败 name={}", traceId, responsibleName);
+        return null;
+    }
+
+    /**
+     * 根据 editUser (ObjectId) 查 account 集合，返回 NurseInfo
+     */
+    private NurseInfo lookupNurseFromEditUser(String editUser, MongoTemplate mongoTemplate, String source, String traceId) {
+        try {
+            ObjectId accountId = new ObjectId(editUser);
+            Query accountQuery = new Query(Criteria.where("_id").is(accountId));
+            Document account = mongoTemplate.findOne(accountQuery, Document.class, "account");
+            if (account != null) {
+                String username = account.getString("username");
+                String trueName = account.getString("trueName");
+                if (trueName != null && !trueName.trim().isEmpty()) {
+                    return NurseInfo.builder()
+                            .nurseId(username != null ? username.trim() : "")
+                            .nurseName(trueName.trim())
+                            .source(source)
+                            .reasonCode(null)
+                            .build();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("STEP_07_NURSE traceId={} 查询account失败 editUser={}: {}", traceId, editUser, e.getMessage());
+        }
         return null;
     }
 

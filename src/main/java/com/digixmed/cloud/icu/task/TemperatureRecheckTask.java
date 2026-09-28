@@ -21,10 +21,10 @@ import java.util.List;
  * 体温复测巡检任务（新链路）
  *
  * 业务规则：
- *   1. 仅针对标准采集节点（2/6/10/14/18/22 整点）的高热记录（vitalsignNVal1 >= 38.5）做复测，
- *      在 1 小时内查找复测数据（bedside.time 属于 (原时间, 原时间+1小时]）；
+ *   1. 仅针对标准采集节点（2/6/10/14/18/22 整点）的高热记录（vitalsignNVal1 >= 39.0）做复测，
+ *      在 1 小时内查找复测数据（bedside.time 属于 (原时间, 原时间+1小时)，排除原始记录）；
  *   2. 每 10 分钟巡检一次，最多 6 次（共 1 小时）；
- *   3. 复测值 >= 38.5：更新 vitalsignNVal2，标记重新发送；
+ *   3. 取窗口内最新的复测值（不论大小）：更新 vitalsignNVal2，标记重新发送；
  *   4. 6 次均未命中或超出 1 小时窗口：vitalsignNVal2 保持为空，不再发送。
  *
  * 操作集合：vitalsign_push_queue（新队列）
@@ -38,7 +38,7 @@ public class TemperatureRecheckTask {
     private static final String BEDSIDE_COLLECTION = "bedside";
 
     /** 复测阈值 */
-    private static final double RECHECK_THRESHOLD = 38.5D;
+    private static final double RECHECK_THRESHOLD = 39.0D;
 
     /** 复测窗口：1 小时 */
     private static final long RECHECK_WINDOW_MS = 3600000L;
@@ -114,9 +114,9 @@ public class TemperatureRecheckTask {
             return "DONE";
         }
 
-        // 已经拿到合格复测值，无需再巡检
-        Double exist = parseValue(record.getString("vitalsignNVal2"));
-        if (exist != null && exist >= RECHECK_THRESHOLD) {
+        // 已经拿到复测值，无需再巡检
+        String existVal = record.getString("vitalsignNVal2");
+        if (existVal != null && !existVal.trim().isEmpty()) {
             markDone(id, attempts, true);
             return "DONE";
         }
@@ -133,12 +133,12 @@ public class TemperatureRecheckTask {
             return "DONE";
         }
 
-        // 查询 [originalTime, originalTime+1小时) 内的 param_T 复测数据（左闭右开）
+        // 查询 (originalTime, originalTime+1小时) 内的 param_T 复测数据（左开右闭，排除原始记录）
         Date recheckWindowEnd = new Date(originalTime.getTime() + RECHECK_WINDOW_MS);
 
         Query recheckQuery = new Query(Criteria.where("pid").is(pid)
                 .and("code").is("param_T")
-                .and("time").gte(originalTime).lt(recheckWindowEnd)
+                .and("time").gt(originalTime).lt(recheckWindowEnd)
                 .and("valid").ne(false).ne(0));
 
         List<Document> recheckDocs = mongoTemplate.find(recheckQuery, Document.class, BEDSIDE_COLLECTION);
@@ -152,19 +152,21 @@ public class TemperatureRecheckTask {
         int candidateCount = recheckDocs == null ? 0 : recheckDocs.size();
 
         String recheckValue = null;
-        if (recheckDocs != null) {
-            for (Document doc : recheckDocs) {
-                Object strVal = doc.get("strVal");
-                String text = strVal == null ? null : strVal.toString();
-                Double value = parseValue(text);
-                if (value != null && value >= RECHECK_THRESHOLD) {
-                    recheckValue = text.trim();
-                    break;
-                }
+        if (recheckDocs != null && !recheckDocs.isEmpty()) {
+            // 按时间降序排序，取最新的一条
+            recheckDocs.sort((a, b) -> {
+                Date timeA = a.get("time") instanceof Date ? (Date) a.get("time") : new Date(0);
+                Date timeB = b.get("time") instanceof Date ? (Date) b.get("time") : new Date(0);
+                return timeB.compareTo(timeA);
+            });
+            Document latest = recheckDocs.get(0);
+            Object strVal = latest.get("strVal");
+            if (strVal != null && !strVal.toString().trim().isEmpty()) {
+                recheckValue = strVal.toString().trim();
             }
         }
 
-        log.info("STEP_06_RECHECK 复测查询: pid={} 窗口=({}, {}] 候选条数={} 命中值={}",
+        log.info("STEP_06_RECHECK 复测查询: pid={} 窗口=({}, {}) 候选条数={} 最新值={}",
                 pid, originalTime, recheckWindowEnd, candidateCount,
                 recheckValue == null ? "-" : recheckValue);
 

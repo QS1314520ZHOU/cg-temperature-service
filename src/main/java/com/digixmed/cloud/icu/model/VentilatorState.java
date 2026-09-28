@@ -5,7 +5,7 @@ package com.digixmed.cloud.icu.model;
  *
  * 业务目的：表示呼吸机的使用状态
  * 输入：MongoDB bedside记录中的param_XiYangTuJing（给氧途径）
- * 判定：strVal为"无创"/"有创"/"高流量湿化氧疗"之一时视为使用呼吸机
+ * 判定：strVal为"无创"/"有创"之一时视为使用呼吸机
  * 输出：呼吸机状态
  * 异常策略：无法判断时返回UNKNOWN
  */
@@ -13,7 +13,7 @@ public enum VentilatorState {
 
     /**
      * 正在使用呼吸机
-     * 条件：当前标准时间点param_XiYangTuJing的strVal为"无创"/"有创"/"高流量湿化氧疗"之一
+     * 条件：当前标准时间点param_XiYangTuJing的strVal为"无创"/"有创"之一
      */
     USING("使用呼吸机"),
 

@@ -41,7 +41,7 @@ import org.bson.types.ObjectId;
  *   3. 状态变化时立即推送（planTime = recordTime = 记录实际时间）
  *
  * 检测范围：
- *   - USING（启用）：新记录的 strVal 为"无创"/"有创"/"高流量湿化氧疗"之一
+ *   - USING（启用）：新记录的 strVal 为"无创"/"有创"之一
  *   - STOPPED（停止）：上一次是 USING，当前最新记录的 strVal 不再是上述三种值
  *   - NOT_USING → USING：新记录出现呼吸机标识
  *   - USING → NOT_USING：由标准时间点扫描（BreathHandler）处理
@@ -58,7 +58,7 @@ public class VentilatorEventDetectTask {
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
     private static final String BEDSIDE = "bedside";
     private static final String VENTILATOR_ROUTE_CODE = "param_XiYangTuJing";
-    private static final Set<String> VENTILATOR_FLAGS = Set.of("无创", "有创", "高流量湿化氧疗");
+    private static final Set<String> VENTILATOR_FLAGS = Set.of("无创", "有创");
 
     /** 呼吸机事件检测开关 */
     @Value("${vitalsign.ventilator-detect-enabled:false}")

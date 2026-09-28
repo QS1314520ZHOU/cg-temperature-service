@@ -136,7 +136,7 @@ FAILED → 推送中 → SUCCESS
 `[前一天07:00, 当天07:00)` — 7-8点每5分钟执行，8点之后每30分钟执行
 
 ### 体温复测窗口
-`[标准时间点, 标准时间点+1小时)` — 体温>=38.5℃触发
+`(标准时间点, 标准时间点+1小时)` — 体温>=39.0℃触发
 
 ## 扫描逻辑
 
@@ -194,12 +194,12 @@ FAILED → 推送中 → SUCCESS
 
 ## 体温复测逻辑
 
-1. TemperatureHandler 采集时体温>=38.5℃ → 设置 `recheckRequired=true, recheckCompleted=false`
+1. TemperatureHandler 采集时体温>=39.0℃ → 设置 `recheckRequired=true, recheckCompleted=false`
 2. 记录写入 `vitalsign_push_queue`，vitalsignNVal2 为空
 3. TemperatureRecheckTask（每10分钟扫描）查询 `recheckRequired=true AND recheckCompleted=false`
-4. 在复测窗口内查找复测值：
-   - 找到且>=38.5 → 更新 vitalsignNVal2，标记 recheckCompleted=true，重置为PENDING重新推送
-   - 找到但<38.5 → 标记完成，vitalsignNVal2保持空
+4. 在复测窗口 (原始时间, 原始时间+1小时) 内查找复测值（排除原始记录）：
+   - 取窗口内最新的复测值（不论大小）→ 更新 vitalsignNVal2，标记 recheckCompleted=true，重新推送
+   - 窗口内无数据 → 标记完成，vitalsignNVal2保持空
    - 未找到且窗口未关闭 → 更新尝试次数，等待下次扫描
    - 未找到且窗口已关闭 → 标记完成
 5. 最大尝试次数：6次
@@ -208,7 +208,7 @@ FAILED → 推送中 → SUCCESS
 
 ### 数据源
 - `param_XiYangTuJing.strVal` — 给氧途径
-- 呼吸机标识判定值：`无创`、`有创`、`高流量湿化氧疗`
+- 呼吸机标识判定值：`无创`、`有创`
 
 ### 检测机制
 | 触发源 | 时机 | 检测内容 |

@@ -233,7 +233,7 @@ public class Controller {
                 // 身高体重（R2: planTime=recordTime=icuAdmissionTime）
                 try {
                     List<VitalSignPayload> hwPayloads = heightWeightHandler.buildAdmissionFirst(
-                            patient, admissionDateTime, null, traceId);
+                            patient, admissionDateTime, traceId);
                     for (VitalSignPayload hwPayload : hwPayloads) {
                         String action = (String) intermediateService.upsertPending(hwPayload, traceId).get("action");
                         if ("INSERT".equals(action)) totalInserted++;

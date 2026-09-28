@@ -63,7 +63,7 @@ public class BreathHandler extends BaseVitalSignHandler {
     /** 呼吸机给氧途径代码 */
     private static final String VENTILATOR_ROUTE_CODE = "param_XiYangTuJing";
     /** 呼吸机标识判定值 */
-    private static final Set<String> VENTILATOR_FLAGS = Set.of("无创", "有创", "高流量湿化氧疗");
+    private static final Set<String> VENTILATOR_FLAGS = Set.of("无创", "有创");
     /** 标准时间点（按顺序，用于判断前一个时间点） */
     private static final List<Integer> STANDARD_HOURS = List.of(2, 6, 10, 14, 18, 22);
 

@@ -911,7 +911,7 @@ public class DailySummaryTask {
                     traceId, window.getStart(), window.getEnd(), pids.size());
 
             // 过滤掉入科时间在窗口结束之后的患者
-            // 过滤掉已出科的患者（使用 MongoDB patient 的 status 和 icuDischargeTime）
+            // 出科过滤：dischargedType 包含出院/死亡的患者，出科时间在窗口结束之前则不再回传出入量（转出仍回传）
             if (!pids.isEmpty()) {
                 Map<String, Document> patientMap = findMongoPatientsByPids(pids);
 
@@ -936,17 +936,18 @@ public class DailySummaryTask {
                         return true;
                     }
 
-                    // 出科判断：使用 MongoDB patient 的 status 和 icuDischargeTime
-                    String patientStatus = getValueFromDocByKey(patient, "status", String.class);
-                    if ("discharged".equals(patientStatus)) {
+                    // 出科判断：dischargedType 包含出院/死亡的，出科时间在窗口结束之前则不再回传出入量
+                    String dischargedType = getValueFromDocByKey(patient, "dischargedType", String.class);
+                    if (dischargedType != null
+                            && (dischargedType.contains("出院") || dischargedType.contains("死亡"))) {
                         Date icuDischargeDate = patient.get("icuDischargeTime") instanceof Date
                                 ? (Date) patient.get("icuDischargeTime") : null;
                         if (icuDischargeDate != null) {
                             LocalDateTime dischargeTime = icuDischargeDate.toInstant()
                                     .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
                             if (dischargeTime.isBefore(window.getEnd())) {
-                                log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} status={} 在窗口结束={}之前，跳过汇总",
-                                        traceId, pid, dischargeTime, patientStatus, window.getEnd());
+                                log.info("STEP_01_PATIENT_FILTERED traceId={} pid={} 出科时间={} dischargedType={} 在窗口结束={}之前，跳过汇总",
+                                        traceId, pid, dischargeTime, dischargedType, window.getEnd());
                                 return true;
                             }
                         }

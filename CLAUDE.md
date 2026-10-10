@@ -1191,3 +1191,44 @@ if (roundedDate.after(startDate)) {
 **行为变化**：
 - 修改前：入科时间09:32 → startDate = 09:32 → 09:00的数据不计算
 - 修改后：入科时间09:32 → startDate = 09:00 → 09:00的数据计算
+
+---
+
+### 2026-10-08：出入量出科过滤改为按 dischargedType 判断
+
+**需求**：
+出入量日汇总的出科过滤条件改为按患者 `dischargedType` 判断（**包含**匹配，非精确等于）：
+- `dischargedType` 包含 **出院** 或 **死亡** → 出科后的第二天起不再回传出入量
+- `dischargedType` 为 **转出** → 第二天仍继续回传
+
+**示例**：
+患者 10月2日 22:00 出院：
+- 10月2日 7:00 执行的汇总（窗口 [10/1 07:00, 10/2 07:00)）→ 出科时间在窗口结束之后 → 正常回传
+- 10月3日 7:00 执行的汇总（窗口 [10/2 07:00, 10/3 07:00)）→ 出科时间在窗口结束之前 → 过滤，不回传
+
+**修改文件**：
+1. `DailySummaryTask.java`：`findCandidatePids` 方法的出科过滤条件
+
+**修改内容**：
+```java
+// 修改前（按 status 判断，出院/死亡/转出一律第二天停止回传）：
+String patientStatus = getValueFromDocByKey(patient, "status", String.class);
+if ("discharged".equals(patientStatus)) {
+    // 出科时间在窗口结束之前 -> 过滤
+}
+
+// 修改后（按 dischargedType 包含判断，只有出院/死亡停止回传）：
+String dischargedType = getValueFromDocByKey(patient, "dischargedType", String.class);
+if (dischargedType != null
+        && (dischargedType.contains("出院") || dischargedType.contains("死亡"))) {
+    // 出科时间在窗口结束之前 -> 过滤
+}
+```
+
+**影响范围**：
+- DailySummaryTask：7-8点每日汇总和8点后变化检测（checkAndResend）的候选患者过滤
+- 行为变化：转出患者出科当天所在窗口的出入量，第二天会继续回传（修改前会被过滤）
+
+**边界情况**：
+- `dischargedType` 为空但 status=discharged 的患者：按新规则不拦截（判断依据只看 dischargedType）
+- 无 icuDischargeTime 的出院/死亡患者：无法比较时间，不拦截（保持原行为）
